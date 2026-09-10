@@ -79,8 +79,17 @@ func (s *Store) GetUTM(id int64) (*models.UTM, error) {
 	return scanUTM(row)
 }
 
+// ListUTMs orders by whichever certificate (ЕГАИС or ГОСТ) expires
+// soonest, ascending — the УТМ needing attention first is at the top, and
+// one with more time left (or no cert data at all yet) sinks toward the
+// bottom. Dates are stored as RFC3339 UTC text, which sorts correctly as a
+// plain string; a UTM missing both dates sorts as if it expired in 9999,
+// i.e. last. min(x, y) here is SQLite's scalar two-argument form, not the
+// single-argument aggregate.
 func (s *Store) ListUTMs() ([]models.UTM, error) {
-	rows, err := s.db.Query(utmSelect + ` ORDER BY created_at ASC`)
+	rows, err := s.db.Query(utmSelect + `
+		ORDER BY min(COALESCE(egais_cert_to, '9999-12-31T23:59:59Z'), COALESCE(gost_cert_to, '9999-12-31T23:59:59Z')) ASC,
+		         id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list utms: %w", err)
 	}

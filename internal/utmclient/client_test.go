@@ -49,10 +49,6 @@ func TestFetchInfoPrimaryAPIPath(t *testing.T) {
 	mux.HandleFunc("/api/rsa", func(w http.ResponseWriter, r *http.Request) {
 		t.Error("/api/rsa should not be queried when /organizations already gave an address")
 	})
-	mux.HandleFunc("/home", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-
 	host, port := splitTestServerURL(t, srv.URL)
 
 	c := New(5 * time.Second)
@@ -90,7 +86,8 @@ func TestFetchInfoPrimaryAPIPath(t *testing.T) {
 // TestFetchInfoDiagnosisFallback covers an older/different УТМ version that
 // lacks /api/info/list entirely: FSRAR_ID still comes through via the
 // documented /diagnosis endpoint, and the poll counts as successful (ИНН
-// stays empty — left for manual entry, per the package doc comment).
+// and certificate dates stay empty — left for manual entry, per the
+// package doc comment).
 func TestFetchInfoDiagnosisFallback(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
@@ -101,12 +98,6 @@ func TestFetchInfoDiagnosisFallback(t *testing.T) {
 	})
 	mux.HandleFunc("/diagnosis", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><CERTIFICATE><CN>030000000002</CN></CERTIFICATE>`)
-	})
-	mux.HandleFunc("/home", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `<html><body>
-			<div>Период действия ключа доступа к ЕГАИС: 01.01.2030 - 31.12.2030</div>
-			<div>Период действия ГОСТ сертификата: 01.02.2030 - 28.02.2031</div>
-		</body></html>`)
 	})
 
 	host, port := splitTestServerURL(t, srv.URL)
@@ -123,11 +114,8 @@ func TestFetchInfoDiagnosisFallback(t *testing.T) {
 	if info.INN != "" {
 		t.Errorf("expected empty INN via the /diagnosis-only fallback, got %q", info.INN)
 	}
-	if info.EgaisCertFrom == nil || info.EgaisCertFrom.Format("2006-01-02") != "2030-01-01" {
-		t.Errorf("EgaisCertFrom = %v, want it scraped from /home", info.EgaisCertFrom)
-	}
-	if info.GostCertTo == nil || info.GostCertTo.Format("2006-01-02") != "2031-02-28" {
-		t.Errorf("GostCertTo = %v, want it scraped from /home", info.GostCertTo)
+	if info.EgaisCertFrom != nil || info.EgaisCertTo != nil {
+		t.Errorf("expected empty cert dates via the /diagnosis-only fallback, got from=%v to=%v", info.EgaisCertFrom, info.EgaisCertTo)
 	}
 }
 
@@ -171,19 +159,4 @@ func splitTestServerURL(t *testing.T, rawURL string) (string, int) {
 		t.Fatal(err)
 	}
 	return host, port
-}
-
-func TestExtractDateRangeNear(t *testing.T) {
-	html := "prefix Период действия ГОСТ сертификата: 15.02.2025 - 14.02.2027 suffix"
-	from, to, ok := extractDateRangeNear(html, "Период действия ГОСТ сертификата")
-	if !ok {
-		t.Fatal("expected a match")
-	}
-	if from.Format("2006-01-02") != "2025-02-15" || to.Format("2006-01-02") != "2027-02-14" {
-		t.Errorf("got from=%v to=%v", from, to)
-	}
-
-	if _, _, ok := extractDateRangeNear(html, "not present"); ok {
-		t.Error("expected no match for absent label")
-	}
 }

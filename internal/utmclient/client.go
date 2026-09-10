@@ -36,22 +36,18 @@
 // versions/builds — every raw response is kept (Info.RawResponse)
 // specifically so the mapping can be extended if needed.
 //
-// Two lightweight, documented fallbacks remain for when the above doesn't
-// cover something (an older/different УТМ version lacking one of these
-// endpoints):
+// One lightweight, documented fallback remains for when /api/info/list
+// itself is unavailable (an older/different УТМ version): GET /diagnosis
+// returns the RSA certificate's subject fields as XML, whose CN is the
+// FSRAR_ID. A single local call, not the async document-exchange flow —
+// and it cannot turn an otherwise-successful poll into a failure; only a
+// total inability to determine even the FSRAR_ID does that.
 //
-//  1. GET /diagnosis returns the RSA certificate's subject fields as XML;
-//     its CN is the FSRAR_ID (used only if /api/info/list didn't already
-//     provide one). A single local call, not the document-exchange flow.
-//  2. A best-effort regex scrape of the legacy GET /home page for
-//     certificate "from" dates, on the rare chance /api/info/list lacks
-//     them on some build.
-//
-// Neither fallback can turn an otherwise-successful poll into a failure —
-// only a total inability to determine even the FSRAR_ID does that. A
-// legal entity's ИНН/name that /organizations doesn't provide is left for
-// manual entry on the "Изменить УТМ" page (see internal/store), the same
-// way 1С treats it. Every field left zero/nil in the returned Info means
+// A legal entity's ИНН/name that /organizations doesn't provide, or
+// either certificate's "from" date should /api/info/list ever lack one on
+// some build, are left for manual entry on the "Изменить УТМ" page (see
+// internal/store), the same way 1С treats ИНН/name it couldn't look up
+// automatically. Every field left zero/nil in the returned Info means
 // "this poll didn't determine it"; callers keep whatever value they
 // already had.
 package utmclient
@@ -64,7 +60,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -78,7 +73,6 @@ const (
 	apiOrganizationsPath = "/api/query/proxy/gateway/fsm/utm/organizations"
 	apiRSAPath           = "/api/rsa"
 	diagnosisPath        = "/diagnosis"
-	homePath             = "/home"
 )
 
 type Client struct {
@@ -133,23 +127,6 @@ func (c *Client) FetchInfo(ctx context.Context, ip string, port int) (*Info, err
 
 	if info.INN == "" {
 		log.Printf("utmclient: %s: %s не дал ИНН — заполните организацию вручную на странице «Изменить УТМ»", base, apiOrganizationsPath)
-	}
-
-	if info.EgaisCertFrom == nil || info.GostCertFrom == nil {
-		if ef, et, gf, gt, ok := c.scrapeCertDates(ctx, base); ok {
-			if info.EgaisCertFrom == nil {
-				info.EgaisCertFrom = ef
-			}
-			if info.EgaisCertTo == nil {
-				info.EgaisCertTo = et
-			}
-			if info.GostCertFrom == nil {
-				info.GostCertFrom = gf
-			}
-			if info.GostCertTo == nil {
-				info.GostCertTo = gt
-			}
-		}
 	}
 
 	return info, nil
@@ -349,45 +326,6 @@ func (c *Client) fetchFSRARID(ctx context.Context, base string) (string, string,
 		return "", string(body), fmt.Errorf("в ответе отсутствует CN (FSRAR_ID)")
 	}
 	return cert.CN, string(body), nil
-}
-
-// scrapeCertDates makes a best-effort attempt to read certificate validity
-// ranges off the legacy home page — neither JSON API endpoint provides a
-// "from" date. Not part of any documented/confirmed contract; may not
-// match every УТМ version.
-func (c *Client) scrapeCertDates(ctx context.Context, base string) (egaisFrom, egaisTo, gostFrom, gostTo *time.Time, ok bool) {
-	body, err := c.get(ctx, base+homePath)
-	if err != nil {
-		return nil, nil, nil, nil, false
-	}
-	html := string(body)
-
-	ef, et, eok := extractDateRangeNear(html, "Период действия ключа доступа к ЕГАИС")
-	gf, gt, gok := extractDateRangeNear(html, "Период действия ГОСТ сертификата")
-	if !eok && !gok {
-		return nil, nil, nil, nil, false
-	}
-	return ef, et, gf, gt, true
-}
-
-var dateRe = regexp.MustCompile(`(\d{2}\.\d{2}\.\d{4})`)
-
-func extractDateRangeNear(html, label string) (*time.Time, *time.Time, bool) {
-	idx := strings.Index(html, label)
-	if idx == -1 {
-		return nil, nil, false
-	}
-	window := html[idx:min(len(html), idx+400)]
-	matches := dateRe.FindAllString(window, 2)
-	if len(matches) < 2 {
-		return nil, nil, false
-	}
-	from, err1 := time.Parse("02.01.2006", matches[0])
-	to, err2 := time.Parse("02.01.2006", matches[1])
-	if err1 != nil || err2 != nil {
-		return nil, nil, false
-	}
-	return &from, &to, true
 }
 
 func (c *Client) get(ctx context.Context, url string) ([]byte, error) {
