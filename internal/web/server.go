@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/scp-oss/utm-data/internal/auth"
+	"github.com/scp-oss/utm-data/internal/models"
 	"github.com/scp-oss/utm-data/internal/scheduler"
 	"github.com/scp-oss/utm-data/internal/store"
 )
@@ -40,10 +41,11 @@ var pageFiles = map[string]string{
 
 func New(st *store.Store, sched *scheduler.Scheduler, authMgr *auth.Manager) *Server {
 	funcs := template.FuncMap{
-		"fmtDate":      fmtDate,
-		"fmtDateInput": fmtDateInput,
-		"fmtDateTime":  fmtDateTime,
-		"certInfo":     newCertInfo,
+		"fmtDate":       fmtDate,
+		"fmtDateInput":  fmtDateInput,
+		"fmtDateTime":   fmtDateTime,
+		"certInfo":      newCertInfo,
+		"prettyOrgName": models.PrettyOrgName,
 	}
 
 	pages := make(map[string]*template.Template, len(pageFiles))

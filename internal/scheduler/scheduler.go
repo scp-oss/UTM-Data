@@ -258,17 +258,18 @@ func (s *Scheduler) checkCert(now time.Time, settings models.Settings, chatIDs [
 // label first (it's what they intentionally called this site), falling
 // back to the organization name fetched from the УТМ, then the IP.
 func notificationText(u models.UTM, certType models.CertType, expiry time.Time, daysLeft int) string {
+	orgName := models.PrettyOrgName(u.OrgName)
 	name := u.Label
 	if name == "" {
-		name = u.OrgName
+		name = orgName
 	}
 	if name == "" {
 		name = u.IPAddress
 	}
 
 	who := name
-	if u.OrgName != "" && u.OrgName != name {
-		who += " (" + u.OrgName + ")"
+	if orgName != "" && orgName != name {
+		who += " (" + orgName + ")"
 	}
 
 	return fmt.Sprintf(

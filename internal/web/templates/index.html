@@ -30,7 +30,7 @@
           {{if .FSRARID}}<br><span class="muted">FSRAR_ID {{.FSRARID}}</span>{{end}}
         </td>
         <td>
-          {{if .OrgName}}{{.OrgName}}<br><span class="muted">ИНН {{.INN}}{{if .KPP}} / КПП {{.KPP}}{{end}}</span>{{else}}<span class="muted">нет данных</span>{{end}}
+          {{if .OrgName}}{{prettyOrgName .OrgName}}<br><span class="muted">ИНН {{.INN}}{{if .KPP}} / КПП {{.KPP}}{{end}}</span>{{else}}<span class="muted">нет данных</span>{{end}}
         </td>
         <td>{{if .InstallAddress}}{{.InstallAddress}}{{else}}<span class="muted">нет данных</span>{{end}}</td>
         <td>{{template "certcell" certInfo .EgaisCertFrom .EgaisCertTo}}</td>
