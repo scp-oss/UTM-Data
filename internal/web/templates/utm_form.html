@@ -7,12 +7,28 @@
 
     <label for="ip">IP-адрес УТМ</label>
     <input type="text" id="ip" name="ip" value="{{if .UTM}}{{.UTM.IPAddress}}{{end}}" placeholder="192.168.1.10" required {{if .UTM}}readonly{{end}}>
-    <div class="hint">ИНН, название организации и адрес установки будут получены автоматически при опросе. Убедитесь, что IP-адрес этого сервера добавлен в доверенные на самой УТМ (Настройки УТМ → Фильтр IP-адресов) — иначе опрос не будет проходить.</div>
+    <div class="hint">При опросе дашборд пытается сам запросить ИНН, название, адрес и сроки сертификатов у УТМ (как кнопка «Запросить из ЕГАИС» в 1С) — это не всегда быстро и не всегда доходит до ответа. Все эти поля ниже можно заполнить или поправить вручную в любой момент; опрос не затирает их пустотой, только заменяет, если сам что-то определил. Убедитесь также, что IP-адрес этого сервера добавлен в доверенные на самой УТМ (Настройки УТМ → Фильтр IP-адресов) — иначе опрос вообще не будет проходить.</div>
 
     <label for="port">Порт</label>
     <input type="number" id="port" name="port" value="{{if .UTM}}{{.UTM.Port}}{{else}}8080{{end}}" min="1" max="65535">
 
     {{if .UTM}}
+    <label for="fsrar_id">FSRAR_ID</label>
+    <input type="text" id="fsrar_id" value="{{.UTM.FSRARID}}" readonly>
+    <div class="hint">Определяется автоматически через <code>GET /diagnosis</code>, вручную не редактируется.</div>
+
+    <label for="inn">ИНН</label>
+    <input type="text" id="inn" name="inn" value="{{.UTM.INN}}">
+
+    <label for="kpp">КПП</label>
+    <input type="text" id="kpp" name="kpp" value="{{.UTM.KPP}}">
+
+    <label for="org_name">Название организации</label>
+    <input type="text" id="org_name" name="org_name" value="{{.UTM.OrgName}}">
+
+    <label for="install_address">Адрес установки</label>
+    <input type="text" id="install_address" name="install_address" value="{{.UTM.InstallAddress}}">
+
     <label>Сертификат доступа к ЕГАИС — период действия</label>
     <div class="row">
       <div><input type="date" name="egais_cert_from" value="{{fmtDateInput .UTM.EgaisCertFrom}}"></div>

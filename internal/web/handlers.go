@@ -137,6 +137,10 @@ func (s *Server) handleUTMUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	label := strings.TrimSpace(r.FormValue("label"))
 	port := parsePortOrDefault(r.FormValue("port"))
+	inn := strings.TrimSpace(r.FormValue("inn"))
+	kpp := strings.TrimSpace(r.FormValue("kpp"))
+	orgName := strings.TrimSpace(r.FormValue("org_name"))
+	installAddress := strings.TrimSpace(r.FormValue("install_address"))
 	egaisFrom, err1 := parseDateInput(r.FormValue("egais_cert_from"))
 	egaisTo, err2 := parseDateInput(r.FormValue("egais_cert_to"))
 	gostFrom, err3 := parseDateInput(r.FormValue("gost_cert_from"))
@@ -146,7 +150,7 @@ func (s *Server) handleUTMUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.UpdateUTMMeta(id, label, port, egaisFrom, egaisTo, gostFrom, gostTo); err != nil {
+	if err := s.store.UpdateUTMMeta(id, label, port, inn, kpp, orgName, installAddress, egaisFrom, egaisTo, gostFrom, gostTo); err != nil {
 		redirectWithFlash(w, r, fmt.Sprintf("/utm/%d/edit", id), "error", "Не удалось сохранить: "+err.Error())
 		return
 	}
