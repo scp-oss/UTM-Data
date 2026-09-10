@@ -55,8 +55,16 @@ func (s *Store) DeleteUTM(id int64) error {
 	return err
 }
 
-func (s *Store) UpdateUTMMeta(id int64, label string, port int) error {
-	_, err := s.db.Exec(`UPDATE utms SET label = ?, port = ? WHERE id = ?`, label, port, id)
+// UpdateUTMMeta saves the operator-editable fields: the label/port chosen
+// when the УТМ was added, plus certificate validity dates. Dates are
+// editable by hand because the УТМ's HTTP API has no documented endpoint
+// for them (see internal/utmclient) — automatic polling still overwrites
+// them whenever it manages to determine a value itself.
+func (s *Store) UpdateUTMMeta(id int64, label string, port int, egaisFrom, egaisTo, gostFrom, gostTo *time.Time) error {
+	_, err := s.db.Exec(`UPDATE utms SET label = ?, port = ?,
+		egais_cert_from = ?, egais_cert_to = ?, gost_cert_from = ?, gost_cert_to = ?
+		WHERE id = ?`,
+		label, port, formatTime(egaisFrom), formatTime(egaisTo), formatTime(gostFrom), formatTime(gostTo), id)
 	return err
 }
 

@@ -94,25 +94,52 @@ func (s *Scheduler) RunCycle(ctx context.Context) {
 	s.CheckAndNotify(ctx)
 }
 
-// PollOne fetches fresh data for a single УТМ and persists the result.
+// PollOne fetches fresh data for a single УТМ and persists the result. A
+// partial or failed poll never erases previously known good data (org
+// info fetched earlier, or certificate dates entered by hand): only fields
+// this poll actually determined are overwritten.
 func (s *Scheduler) PollOne(ctx context.Context, u models.UTM) {
 	info, err := s.client.FetchInfo(ctx, u.IPAddress, u.Port)
 
-	result := store.PollResult{OK: err == nil}
+	result := store.PollResult{
+		OK:             err == nil,
+		INN:            u.INN,
+		KPP:            u.KPP,
+		OrgName:        u.OrgName,
+		InstallAddress: u.InstallAddress,
+		EgaisCertFrom:  u.EgaisCertFrom,
+		EgaisCertTo:    u.EgaisCertTo,
+		GostCertFrom:   u.GostCertFrom,
+		GostCertTo:     u.GostCertTo,
+	}
 	if err != nil {
 		result.Error = err.Error()
 		log.Printf("poll утм #%d (%s:%d): %v", u.ID, u.IPAddress, u.Port, err)
 	}
 	if info != nil {
 		result.RawResponse = info.RawResponse
-		if err == nil {
+		if info.INN != "" {
 			result.INN = info.INN
+		}
+		if info.KPP != "" {
 			result.KPP = info.KPP
+		}
+		if info.OrgName != "" {
 			result.OrgName = info.OrgName
+		}
+		if info.InstallAddress != "" {
 			result.InstallAddress = info.InstallAddress
+		}
+		if info.EgaisCertFrom != nil {
 			result.EgaisCertFrom = info.EgaisCertFrom
+		}
+		if info.EgaisCertTo != nil {
 			result.EgaisCertTo = info.EgaisCertTo
+		}
+		if info.GostCertFrom != nil {
 			result.GostCertFrom = info.GostCertFrom
+		}
+		if info.GostCertTo != nil {
 			result.GostCertTo = info.GostCertTo
 		}
 	}

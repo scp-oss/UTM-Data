@@ -139,12 +139,33 @@ func (s *Server) handleUTMUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	label := strings.TrimSpace(r.FormValue("label"))
 	port := parsePortOrDefault(r.FormValue("port"))
+	egaisFrom, err1 := parseDateInput(r.FormValue("egais_cert_from"))
+	egaisTo, err2 := parseDateInput(r.FormValue("egais_cert_to"))
+	gostFrom, err3 := parseDateInput(r.FormValue("gost_cert_from"))
+	gostTo, err4 := parseDateInput(r.FormValue("gost_cert_to"))
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		redirectWithFlash(w, r, fmt.Sprintf("/utm/%d/edit", id), "error", "Некорректная дата, используйте формат ГГГГ-ММ-ДД")
+		return
+	}
 
-	if err := s.store.UpdateUTMMeta(id, label, port); err != nil {
+	if err := s.store.UpdateUTMMeta(id, label, port, egaisFrom, egaisTo, gostFrom, gostTo); err != nil {
 		redirectWithFlash(w, r, fmt.Sprintf("/utm/%d/edit", id), "error", "Не удалось сохранить: "+err.Error())
 		return
 	}
 	redirectWithFlash(w, r, "/", "ok", "Изменения сохранены")
+}
+
+// parseDateInput parses an HTML <input type=date> value ("" means "clear").
+func parseDateInput(s string) (*time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
 func (s *Server) handleUTMDelete(w http.ResponseWriter, r *http.Request) {

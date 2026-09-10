@@ -7,10 +7,24 @@
 
     <label for="ip">IP-адрес УТМ</label>
     <input type="text" id="ip" name="ip" value="{{if .UTM}}{{.UTM.IPAddress}}{{end}}" placeholder="192.168.1.10" required {{if .UTM}}readonly{{end}}>
-    <div class="hint">ИНН, название организации, адрес установки и сроки действия сертификатов будут получены автоматически при опросе.</div>
+    <div class="hint">ИНН, название организации и адрес установки будут получены автоматически при опросе. Убедитесь, что IP-адрес этого сервера добавлен в доверенные на самой УТМ (Настройки УТМ → Фильтр IP-адресов) — иначе опрос не будет проходить.</div>
 
     <label for="port">Порт</label>
     <input type="number" id="port" name="port" value="{{if .UTM}}{{.UTM.Port}}{{else}}8080{{end}}" min="1" max="65535">
+
+    {{if .UTM}}
+    <label>Сертификат доступа к ЕГАИС — период действия</label>
+    <div class="row">
+      <div><input type="date" name="egais_cert_from" value="{{fmtDateInput .UTM.EgaisCertFrom}}"></div>
+      <div><input type="date" name="egais_cert_to" value="{{fmtDateInput .UTM.EgaisCertTo}}"></div>
+    </div>
+    <label>ГОСТ-сертификат — период действия</label>
+    <div class="row">
+      <div><input type="date" name="gost_cert_from" value="{{fmtDateInput .UTM.GostCertFrom}}"></div>
+      <div><input type="date" name="gost_cert_to" value="{{fmtDateInput .UTM.GostCertTo}}"></div>
+    </div>
+    <div class="hint">УТМ не публикует эти сроки через API — только на своей домашней странице (раздел «Сертификаты»). Дашборд пытается считать их автоматически, но при необходимости их можно указать вручную здесь; автоматический опрос обновит их, как только сможет определить сам.</div>
+    {{end}}
 
     <div style="margin-top:20px; display:flex; gap:8px;">
       <button class="btn" type="submit">{{if .UTM}}Сохранить{{else}}Добавить и опросить{{end}}</button>

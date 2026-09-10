@@ -41,9 +41,10 @@ var pageFiles = map[string]string{
 
 func New(st *store.Store, sched *scheduler.Scheduler, authMgr *auth.Manager) *Server {
 	funcs := template.FuncMap{
-		"fmtDate":     fmtDate,
-		"fmtDateTime": fmtDateTime,
-		"certInfo":    newCertInfo,
+		"fmtDate":      fmtDate,
+		"fmtDateInput": fmtDateInput,
+		"fmtDateTime":  fmtDateTime,
+		"certInfo":     newCertInfo,
 	}
 
 	pages := make(map[string]*template.Template, len(pageFiles))
@@ -151,8 +152,12 @@ func flashFromRequest(r *http.Request) *flash {
 	return &flash{Kind: kind, Text: text}
 }
 
+// pollTimeout bounds a synchronous "poll now"/"add УТМ" HTTP request. The
+// underlying discovery flow submits a query to the central ЕГАИС server and
+// waits for its async reply (up to ~45s, see utmclient.replyWaitTimeout),
+// so this needs real headroom beyond a typical request.
 func pollTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, 15*time.Second)
+	return context.WithTimeout(ctx, 60*time.Second)
 }
 
 func fmtDate(t *time.Time) string {
@@ -160,6 +165,14 @@ func fmtDate(t *time.Time) string {
 		return ""
 	}
 	return t.Format("02.01.2006")
+}
+
+// fmtDateInput formats a date for an HTML <input type=date> value.
+func fmtDateInput(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.Format("2006-01-02")
 }
 
 func fmtDateTime(t *time.Time) string {
