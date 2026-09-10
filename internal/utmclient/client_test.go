@@ -127,14 +127,24 @@ func TestFetchInfoPrimaryAPIPath(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
+	// This is the real shape confirmed against a live УТМ 4.2.0 (prod
+	// contour) — see the package doc comment on apiInfoListResponse.
 	mux.HandleFunc("/api/info/list", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"version":"4.2.0b002644","ownerId":"030000199312",
-			"rsa":{"expireDate":"2026-12-31"},
-			"gost":{"expireDate":"2027-02-14T00:00:00"}}`)
+		fmt.Fprint(w, `{"version":"4.2.0","contour":"prod","rsaError":null,"checkInfo":null,
+			"ownerId":"030001122298",
+			"db":{"createDate":"2026-09-08 15:33:15.047","ownerId":"030001122298"},
+			"rsa":{"certType":"RSA","startDate":"2026-06-19 05:01:45 +0000",
+				"expireDate":"2027-06-19 05:11:45 +0000","isValid":"valid",
+				"issuer":"pki.fsrar.ru","keyStartDate":null,"keyExpireDate":null,"isKeyValid":null},
+			"gost":{"certType":"GOST","startDate":"2026-06-18 20:14:32 +0000",
+				"expireDate":"2027-09-18 20:14:32 +0000","isValid":"valid",
+				"issuer":"ООО \"Компания \"Тензор\"","keyStartDate":"2026-06-18 20:14:31 +0000",
+				"keyExpireDate":"2027-09-18 20:14:31 +0000","isKeyValid":"valid"},
+			"license":false}`)
 	})
 	mux.HandleFunc("/api/rsa", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"rows":[
-			{"pass_owner_id":"030000199312","Fact_Address":"г. Пенза, ул. Бородина, 2"},
+			{"pass_owner_id":"030001122298","Fact_Address":"обл. Пензенская,г.о. город Пенза,г. Пенза,ул. Бородина,д. 2"},
 			{"pass_owner_id":"999999999999","Fact_Address":"другой адрес"}
 		]}`)
 	})
@@ -152,16 +162,22 @@ func TestFetchInfoPrimaryAPIPath(t *testing.T) {
 		t.Fatalf("FetchInfo failed: %v", err)
 	}
 
-	if info.FSRARID != "030000199312" {
-		t.Errorf("FSRARID = %q, want 030000199312", info.FSRARID)
+	if info.FSRARID != "030001122298" {
+		t.Errorf("FSRARID = %q, want 030001122298", info.FSRARID)
 	}
-	if info.EgaisCertTo == nil || info.EgaisCertTo.Format("2006-01-02") != "2026-12-31" {
+	if info.EgaisCertFrom == nil || info.EgaisCertFrom.UTC().Format("2006-01-02 15:04:05") != "2026-06-19 05:01:45" {
+		t.Errorf("EgaisCertFrom = %v", info.EgaisCertFrom)
+	}
+	if info.EgaisCertTo == nil || info.EgaisCertTo.UTC().Format("2006-01-02 15:04:05") != "2027-06-19 05:11:45" {
 		t.Errorf("EgaisCertTo = %v", info.EgaisCertTo)
 	}
-	if info.GostCertTo == nil || info.GostCertTo.Format("2006-01-02") != "2027-02-14" {
+	if info.GostCertFrom == nil || info.GostCertFrom.UTC().Format("2006-01-02 15:04:05") != "2026-06-18 20:14:32" {
+		t.Errorf("GostCertFrom = %v", info.GostCertFrom)
+	}
+	if info.GostCertTo == nil || info.GostCertTo.UTC().Format("2006-01-02 15:04:05") != "2027-09-18 20:14:32" {
 		t.Errorf("GostCertTo = %v", info.GostCertTo)
 	}
-	if info.InstallAddress != "г. Пенза, ул. Бородина, 2" {
+	if info.InstallAddress != "обл. Пензенская,г.о. город Пенза,г. Пенза,ул. Бородина,д. 2" {
 		t.Errorf("InstallAddress = %q", info.InstallAddress)
 	}
 	// INN/OrgName stay empty since QueryPartner 404s — that must not fail
@@ -173,13 +189,14 @@ func TestFetchInfoPrimaryAPIPath(t *testing.T) {
 
 func TestParseCertTimeVariants(t *testing.T) {
 	cases := map[string]string{
-		`"2026-12-31"`:          "2026-12-31",
-		`"2027-02-14T00:00:00"`: "2027-02-14",
-		`"31.12.2026"`:          "2026-12-31",
-		`1798675200`:            "2026-12-31", // unix seconds
-		`1798675200000`:         "2026-12-31", // unix milliseconds
-		`null`:                  "",
-		`""`:                    "",
+		`"2027-06-19 05:11:45 +0000"`: "2027-06-19", // confirmed real format
+		`"2026-12-31"`:                "2026-12-31",
+		`"2027-02-14T00:00:00"`:       "2027-02-14",
+		`"31.12.2026"`:                "2026-12-31",
+		`1798675200`:                  "2026-12-31", // unix seconds
+		`1798675200000`:               "2026-12-31", // unix milliseconds
+		`null`:                        "",
+		`""`:                          "",
 	}
 	for raw, want := range cases {
 		got := parseCertTime(json.RawMessage(raw))

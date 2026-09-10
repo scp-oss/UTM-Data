@@ -175,17 +175,30 @@ func (c *Client) FetchInfo(ctx context.Context, ip string, port int) (*Info, err
 	return info, nil
 }
 
-// apiInfoListResponse mirrors the confirmed-working shape of
-// GET /api/info/list. Certificate dates are json.RawMessage because the
-// real encoding (ISO string vs. epoch number) hasn't been independently
-// verified — parseCertTime below handles either.
+// apiInfoListResponse mirrors GET /api/info/list, confirmed against a real
+// УТМ 4.2.0 (prod contour). Sample response:
+//
+//	{"version":"4.2.0","ownerId":"030001122298",
+//	 "rsa":{"certType":"RSA","startDate":"2026-06-19 05:01:45 +0000",
+//	        "expireDate":"2027-06-19 05:11:45 +0000","isValid":"valid",
+//	        "issuer":"pki.fsrar.ru"},
+//	 "gost":{"certType":"GOST","startDate":"2026-06-18 20:14:32 +0000",
+//	         "expireDate":"2027-09-18 20:14:32 +0000","isValid":"valid",
+//	         "issuer":"ООО \"Компания \"Тензор\""}}
+//
+// Dates are still parsed via parseCertTime's json.RawMessage handling
+// (rather than a plain string field) since other date encodings were seen
+// as speculative before this confirmation and a different УТМ
+// version/build could still vary.
 type apiInfoListResponse struct {
 	Version string `json:"version"`
 	OwnerID string `json:"ownerId"`
 	RSA     struct {
+		StartDate  json.RawMessage `json:"startDate"`
 		ExpireDate json.RawMessage `json:"expireDate"`
 	} `json:"rsa"`
 	Gost struct {
+		StartDate  json.RawMessage `json:"startDate"`
 		ExpireDate json.RawMessage `json:"expireDate"`
 	} `json:"gost"`
 }
@@ -219,7 +232,9 @@ func (c *Client) fetchAPIInfo(ctx context.Context, base string, info *Info) erro
 	}
 
 	info.FSRARID = resp.OwnerID
+	info.EgaisCertFrom = parseCertTime(resp.RSA.StartDate)
 	info.EgaisCertTo = parseCertTime(resp.RSA.ExpireDate)
+	info.GostCertFrom = parseCertTime(resp.Gost.StartDate)
 	info.GostCertTo = parseCertTime(resp.Gost.ExpireDate)
 	log.Printf("utmclient: %s: %s ok: ownerId=%s версия=%s", base, apiInfoListPath, resp.OwnerID, resp.Version)
 
@@ -244,10 +259,10 @@ func (c *Client) fetchAPIInfo(ctx context.Context, base string, info *Info) erro
 	return nil
 }
 
-// parseCertTime accepts either a quoted date string (several common
-// layouts) or a bare/quoted Unix timestamp in seconds, milliseconds or
-// microseconds — the real encoding of /api/info/list's expireDate fields
-// hasn't been independently confirmed, so this is deliberately lenient.
+// parseCertTime accepts a quoted date string (the confirmed real layout,
+// "2006-01-02 15:04:05 -0700", is tried first; a few other common ones are
+// kept as fallbacks in case a different УТМ build/version varies) or a
+// bare/quoted Unix timestamp in seconds, milliseconds or microseconds.
 func parseCertTime(raw json.RawMessage) *time.Time {
 	s := strings.Trim(strings.TrimSpace(string(raw)), `"`)
 	if s == "" || s == "null" {
@@ -277,6 +292,7 @@ func parseCertTime(raw json.RawMessage) *time.Time {
 }
 
 var certTimeLayouts = []string{
+	"2006-01-02 15:04:05 -0700", // confirmed real format, e.g. "2026-06-19 05:01:45 +0000"
 	time.RFC3339,
 	"2006-01-02T15:04:05",
 	"2006-01-02",
