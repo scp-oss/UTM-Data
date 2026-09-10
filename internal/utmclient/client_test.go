@@ -2,6 +2,7 @@ package utmclient
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -83,19 +84,7 @@ func newFakeUTMServer(t *testing.T) *httptest.Server {
 
 func TestFetchInfoFullFlow(t *testing.T) {
 	srv := newFakeUTMServer(t)
-
-	u, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	host, portStr, err := net.SplitHostPort(u.Host)
-	if err != nil {
-		t.Fatal(err)
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatal(err)
-	}
+	host, port := splitTestServerURL(t, srv.URL)
 
 	c := New(5 * time.Second)
 	info, err := c.FetchInfo(context.Background(), host, port)
@@ -127,6 +116,100 @@ func TestFetchInfoFullFlow(t *testing.T) {
 	if info.GostCertTo == nil || info.GostCertTo.Format("2006-01-02") != "2027-02-14" {
 		t.Errorf("GostCertTo = %v", info.GostCertTo)
 	}
+}
+
+// TestFetchInfoPrimaryAPIPath exercises the confirmed-working fast path
+// (GET /api/info/list + GET /api/rsa) that a real УТМ was seen answering
+// synchronously, without any of the async QueryPartner machinery. This
+// path is expected to be the common case in practice.
+func TestFetchInfoPrimaryAPIPath(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	mux.HandleFunc("/api/info/list", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"version":"4.2.0b002644","ownerId":"030000199312",
+			"rsa":{"expireDate":"2026-12-31"},
+			"gost":{"expireDate":"2027-02-14T00:00:00"}}`)
+	})
+	mux.HandleFunc("/api/rsa", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"rows":[
+			{"pass_owner_id":"030000199312","Fact_Address":"г. Пенза, ул. Бородина, 2"},
+			{"pass_owner_id":"999999999999","Fact_Address":"другой адрес"}
+		]}`)
+	})
+	// QueryPartner (ИНН/название) is deliberately left unimplemented here
+	// (404) — the primary path must still succeed on its own.
+	mux.HandleFunc("/home", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	host, port := splitTestServerURL(t, srv.URL)
+
+	c := New(5 * time.Second)
+	info, err := c.FetchInfo(context.Background(), host, port)
+	if err != nil {
+		t.Fatalf("FetchInfo failed: %v", err)
+	}
+
+	if info.FSRARID != "030000199312" {
+		t.Errorf("FSRARID = %q, want 030000199312", info.FSRARID)
+	}
+	if info.EgaisCertTo == nil || info.EgaisCertTo.Format("2006-01-02") != "2026-12-31" {
+		t.Errorf("EgaisCertTo = %v", info.EgaisCertTo)
+	}
+	if info.GostCertTo == nil || info.GostCertTo.Format("2006-01-02") != "2027-02-14" {
+		t.Errorf("GostCertTo = %v", info.GostCertTo)
+	}
+	if info.InstallAddress != "г. Пенза, ул. Бородина, 2" {
+		t.Errorf("InstallAddress = %q", info.InstallAddress)
+	}
+	// INN/OrgName stay empty since QueryPartner 404s — that must not fail
+	// the overall poll, since FSRAR_ID + cert dates already succeeded.
+	if info.INN != "" {
+		t.Errorf("expected empty INN when QueryPartner is unavailable, got %q", info.INN)
+	}
+}
+
+func TestParseCertTimeVariants(t *testing.T) {
+	cases := map[string]string{
+		`"2026-12-31"`:          "2026-12-31",
+		`"2027-02-14T00:00:00"`: "2027-02-14",
+		`"31.12.2026"`:          "2026-12-31",
+		`1798675200`:            "2026-12-31", // unix seconds
+		`1798675200000`:         "2026-12-31", // unix milliseconds
+		`null`:                  "",
+		`""`:                    "",
+	}
+	for raw, want := range cases {
+		got := parseCertTime(json.RawMessage(raw))
+		if want == "" {
+			if got != nil {
+				t.Errorf("parseCertTime(%s) = %v, want nil", raw, got)
+			}
+			continue
+		}
+		if got == nil || got.UTC().Format("2006-01-02") != want {
+			t.Errorf("parseCertTime(%s) = %v, want %s", raw, got, want)
+		}
+	}
+}
+
+func splitTestServerURL(t *testing.T, rawURL string) (string, int) {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, portStr, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return host, port
 }
 
 func TestExtractDateRangeNear(t *testing.T) {

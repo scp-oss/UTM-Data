@@ -1,43 +1,56 @@
 // Package utmclient talks to a УТМ's local HTTP API to discover the
-// organization it belongs to (ИНН, name, licensed address) and, on a
-// best-effort basis, its certificate validity dates.
+// organization it belongs to (ИНН, name, licensed address) and its
+// certificate validity dates.
 //
-// The organization lookup follows the flow documented in ФСРАР's
-// "Технические требования УТМ" (https://fsrar.gov.ru/opendata/dist/documentation.pdf):
+// PRIMARY PATH — confirmed working against a real device (not from the
+// official PDF): a small JSON API that backs the УТМ's own web home page.
 //
-//  1. GET /diagnosis returns the RSA (ЕГАИС access) certificate's subject
-//     fields as XML; its CN is the УТМ's own FSRAR_ID.
-//  2. A QueryClients/QueryPartner document, addressed to that same
-//     FSRAR_ID as both Owner and query subject (query parameter "СИО"),
-//     is POSTed as multipart field "xml_file" to /opt/in/QueryPartner.
-//     УТМ answers immediately with a receipt whose <url> is a UUID that
-//     becomes the eventual reply's replyId — the real answer is an
-//     ASYNC round trip through the central ЕГАИС server, not a local
-//     lookup, and can take a while.
-//  3. /opt/out?replyId=<uuid> is polled until the ReplyPartner document
-//     shows up, then fetched-and-removed with POST (per the spec, GET
-//     reads without removing, POST reads and deletes, DELETE removes
-//     without reading).
-//  4. The ReplyPartner XML carries ИНН, КПП, FullName/ShortName and the
-//     licensed address.
+//	GET /api/info/list -> {"version": "...", "ownerId": "...",
+//	  "rsa": {"expireDate": "..."}, "gost": {"expireDate": "..."}}
+//	  ownerId is the FSRAR_ID; rsa/gost.expireDate are the two
+//	  certificates' "to" dates. This is a plain, synchronous, local call
+//	  — no round trip to the central ЕГАИС server.
+//	GET /api/rsa -> {"rows": [{"pass_owner_id": "...", "Fact_Address": "..."}, ...]}
+//	  filtering rows by pass_owner_id == ownerId gives the licensed
+//	  installation address for this УТМ.
 //
-// Certificate validity dates (the EGAIS RSA cert and the GOST cert) are
-// NOT part of this documented API at all — the spec only shows them
-// displayed on the УТМ's own web home page, never as a JSON/XML field.
-// scrapeCertDates makes a best-effort attempt against the legacy GET /home
-// page using the exact Russian labels the spec names, but that page's
-// actual markup was never shown in the PDF (only described narratively),
-// so it may simply not match a given УТМ version — this is explicitly a
-// heuristic, not a documented contract. When it finds nothing, existing
-// values are left untouched; the "Изменить УТМ" page lets an operator
-// enter/correct these dates by hand from the УТМ's own home page or a
-// downloaded certificate, which is the officially supported way to see
-// them.
+// This is undocumented in ФСРАР's public "Технические требования УТМ"
+// PDF (which only covers the document-exchange protocol), so field names
+// beyond what's been confirmed (version/ownerId/rsa.expireDate/
+// gost.expireDate/pass_owner_id/Fact_Address) are unverified — every raw
+// response is kept (Info.RawResponse) specifically so the mapping can be
+// extended once more of the real shape is seen. It also doesn't cover
+// ИНН/КПП/organization name at all, or either certificate's "from" date.
+//
+// SECONDARY PATH — for whatever the primary path doesn't cover, and as a
+// fallback if /api/info/list isn't available on some УТМ version:
+//
+//  1. GET /diagnosis returns the RSA certificate's subject fields as XML;
+//     its CN is the FSRAR_ID (used only if /api/info/list didn't already
+//     provide one).
+//  2. A QueryClients/QueryPartner document, addressed to that FSRAR_ID as
+//     both Owner and query subject ("СИО"), is POSTed as multipart field
+//     "xml_file" to /opt/in/QueryPartner. This is a genuinely ASYNC round
+//     trip through the central ЕГАИС server (documented in the PDF) that
+//     can take a couple of minutes, or simply never complete in practice
+//     — real-world software (1С) treats this the same way this client
+//     does: a "Запросить из ЕГАИС"-style convenience, not something to
+//     block on, with manual entry as the standing alternative (see the
+//     "Изменить УТМ" page). Its ReplyPartner reply carries ИНН, КПП,
+//     FullName/ShortName and address.
+//  3. A best-effort regex scrape of the legacy GET /home page for
+//     certificate "from" dates, which neither JSON endpoint provides.
+//
+// None of these secondary lookups can turn an otherwise-successful poll
+// into a failure — only a total inability to determine even the FSRAR_ID
+// does that. Every field left zero/nil in the returned Info means "this
+// poll didn't determine it"; callers keep whatever value they already had.
 package utmclient
 
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -45,6 +58,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -53,17 +67,21 @@ import (
 const DefaultPort = 8080
 
 const (
+	apiInfoListPath        = "/api/info/list"
+	apiRSAPath             = "/api/rsa"
 	diagnosisPath          = "/diagnosis"
 	queryPartnerSubmitPath = "/opt/in/QueryPartner"
 	optOutPath             = "/opt/out"
 	homePath               = "/home"
 )
 
-// replyWaitTimeout bounds how long we wait for УТМ to relay a reply from
-// the central ЕГАИС server — a real network round trip to a government
-// server, not a local call, so it can genuinely take a while. This is safe
-// to keep generous because polling now always runs detached from any HTTP
-// request (see scheduler.PollOneAsync).
+// replyWaitTimeout bounds how long we wait for УТМ to relay a QueryPartner
+// reply from the central ЕГАИС server — a real network round trip to a
+// government server, not a local call, so it can genuinely take a while.
+// Safe to keep generous because polling always runs detached from any HTTP
+// request (see scheduler.PollOneAsync), and because its result is now only
+// a best-effort supplement (ИНН/name), never load-bearing for the poll to
+// count as successful.
 const (
 	replyWaitTimeout  = 120 * time.Second
 	replyPollInterval = 3 * time.Second
@@ -77,9 +95,7 @@ func New(timeout time.Duration) *Client {
 	return &Client{httpClient: &http.Client{Timeout: timeout}}
 }
 
-// Info is the normalized, possibly-partial result of polling a УТМ. Any
-// field left zero/nil means this poll didn't determine it — callers should
-// keep whatever value they already had rather than overwrite it.
+// Info is the normalized, possibly-partial result of polling a УТМ.
 type Info struct {
 	FSRARID        string
 	INN            string
@@ -90,45 +106,181 @@ type Info struct {
 	EgaisCertTo    *time.Time
 	GostCertFrom   *time.Time
 	GostCertTo     *time.Time
-	RawResponse    string // last raw response seen, kept for troubleshooting
+	RawResponse    string // raw responses seen so far, kept for troubleshooting
 }
 
 // FetchInfo runs the full discovery flow against a single УТМ. It returns a
-// non-nil *Info even on error, populated with whatever raw response was
-// last seen, so the caller can persist it for debugging.
+// non-nil *Info even on error, populated with whatever was determined and
+// whatever raw response was last seen, so the caller can persist both for
+// debugging. An error is returned only when nothing at all could be
+// determined (not even the FSRAR_ID) — a partial result is not an error.
 func (c *Client) FetchInfo(ctx context.Context, ip string, port int) (*Info, error) {
 	base := fmt.Sprintf("http://%s:%d", ip, port)
+	info := &Info{}
 
-	fsrarID, diagRaw, err := c.fetchFSRARID(ctx, base)
-	info := &Info{FSRARID: fsrarID, RawResponse: diagRaw}
-	if err != nil {
-		log.Printf("utmclient: %s: /diagnosis failed: %v", base, err)
-		return info, fmt.Errorf("получение FSRAR_ID (%s%s): %w", base, diagnosisPath, err)
+	apiErr := c.fetchAPIInfo(ctx, base, info)
+	if apiErr != nil {
+		log.Printf("utmclient: %s: /api/info/list недоступен (%v), пробуем /diagnosis", base, apiErr)
+		if fsrarID, diagRaw, err := c.fetchFSRARID(ctx, base); err == nil {
+			info.FSRARID = fsrarID
+			if info.RawResponse == "" {
+				info.RawResponse = diagRaw
+			}
+			log.Printf("utmclient: %s: FSRAR_ID (через /diagnosis) = %s", base, fsrarID)
+		}
 	}
-	log.Printf("utmclient: %s: FSRAR_ID = %s", base, fsrarID)
 
-	partner, partnerRaw, err := c.fetchPartnerInfo(ctx, base, fsrarID)
-	if partnerRaw != "" {
-		info.RawResponse = partnerRaw
+	if info.FSRARID == "" {
+		if apiErr != nil {
+			return info, fmt.Errorf("получение данных УТМ: %w", apiErr)
+		}
+		return info, fmt.Errorf("не удалось определить FSRAR_ID")
 	}
-	if err != nil {
-		log.Printf("utmclient: %s: QueryPartner failed: %v", base, err)
-		return info, fmt.Errorf("получение справочника организации (QueryPartner): %w", err)
-	}
-	log.Printf("utmclient: %s: получен ReplyPartner, ИНН=%s", base, partner.INN)
-	info.INN = partner.INN
-	info.KPP = partner.KPP
-	info.OrgName = firstNonEmpty(partner.ShortName, partner.FullName)
-	info.InstallAddress = partner.Address
 
-	// Best effort only — see package doc comment above. A miss here does
-	// not fail the whole poll; INN/org/address are already good.
-	if ef, et, gf, gt, ok := c.scrapeCertDates(ctx, base); ok {
-		info.EgaisCertFrom, info.EgaisCertTo = ef, et
-		info.GostCertFrom, info.GostCertTo = gf, gt
+	// Best effort only, from here on: a miss on either does not fail the
+	// poll — FSRAR_ID (and, usually, certificate expiry dates) are already
+	// good from the primary path above.
+	if partner, partnerRaw, err := c.fetchPartnerInfo(ctx, base, info.FSRARID); err == nil {
+		log.Printf("utmclient: %s: получен ReplyPartner, ИНН=%s", base, partner.INN)
+		info.INN = partner.INN
+		info.KPP = partner.KPP
+		info.OrgName = firstNonEmpty(partner.ShortName, partner.FullName)
+		if info.InstallAddress == "" {
+			info.InstallAddress = partner.Address
+		}
+		if partnerRaw != "" {
+			info.RawResponse += "\n--- QueryPartner/ReplyPartner ---\n" + partnerRaw
+		}
+	} else {
+		log.Printf("utmclient: %s: QueryPartner (ИНН/название организации, необязательно) failed: %v", base, err)
+	}
+
+	if info.EgaisCertFrom == nil || info.GostCertFrom == nil {
+		if ef, et, gf, gt, ok := c.scrapeCertDates(ctx, base); ok {
+			if info.EgaisCertFrom == nil {
+				info.EgaisCertFrom = ef
+			}
+			if info.EgaisCertTo == nil {
+				info.EgaisCertTo = et
+			}
+			if info.GostCertFrom == nil {
+				info.GostCertFrom = gf
+			}
+			if info.GostCertTo == nil {
+				info.GostCertTo = gt
+			}
+		}
 	}
 
 	return info, nil
+}
+
+// apiInfoListResponse mirrors the confirmed-working shape of
+// GET /api/info/list. Certificate dates are json.RawMessage because the
+// real encoding (ISO string vs. epoch number) hasn't been independently
+// verified — parseCertTime below handles either.
+type apiInfoListResponse struct {
+	Version string `json:"version"`
+	OwnerID string `json:"ownerId"`
+	RSA     struct {
+		ExpireDate json.RawMessage `json:"expireDate"`
+	} `json:"rsa"`
+	Gost struct {
+		ExpireDate json.RawMessage `json:"expireDate"`
+	} `json:"gost"`
+}
+
+type apiRSAResponse struct {
+	Rows []struct {
+		PassOwnerID string `json:"pass_owner_id"`
+		FactAddress string `json:"Fact_Address"`
+	} `json:"rows"`
+}
+
+// fetchAPIInfo is the primary discovery path. It sets whatever it can
+// directly on info and returns an error only when /api/info/list itself
+// couldn't be read/parsed or didn't carry an ownerId — a failure of the
+// secondary /api/rsa call (address lookup) is logged but not fatal.
+func (c *Client) fetchAPIInfo(ctx context.Context, base string, info *Info) error {
+	body, err := c.get(ctx, base+apiInfoListPath)
+	if len(body) > 0 {
+		info.RawResponse = string(body)
+	}
+	if err != nil {
+		return err
+	}
+
+	var resp apiInfoListResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return fmt.Errorf("разбор %s: %w", apiInfoListPath, err)
+	}
+	if resp.OwnerID == "" {
+		return fmt.Errorf("в ответе %s отсутствует ownerId", apiInfoListPath)
+	}
+
+	info.FSRARID = resp.OwnerID
+	info.EgaisCertTo = parseCertTime(resp.RSA.ExpireDate)
+	info.GostCertTo = parseCertTime(resp.Gost.ExpireDate)
+	log.Printf("utmclient: %s: %s ok: ownerId=%s версия=%s", base, apiInfoListPath, resp.OwnerID, resp.Version)
+
+	addrBody, addrErr := c.get(ctx, base+apiRSAPath)
+	if addrErr != nil {
+		log.Printf("utmclient: %s: %s (адрес установки, необязательно) failed: %v", base, apiRSAPath, addrErr)
+		return nil
+	}
+	info.RawResponse += "\n--- " + apiRSAPath + " ---\n" + string(addrBody)
+
+	var rsaResp apiRSAResponse
+	if err := json.Unmarshal(addrBody, &rsaResp); err != nil {
+		log.Printf("utmclient: %s: разбор %s: %v", base, apiRSAPath, err)
+		return nil
+	}
+	for _, row := range rsaResp.Rows {
+		if row.PassOwnerID == resp.OwnerID && row.FactAddress != "" {
+			info.InstallAddress = row.FactAddress
+			break
+		}
+	}
+	return nil
+}
+
+// parseCertTime accepts either a quoted date string (several common
+// layouts) or a bare/quoted Unix timestamp in seconds, milliseconds or
+// microseconds — the real encoding of /api/info/list's expireDate fields
+// hasn't been independently confirmed, so this is deliberately lenient.
+func parseCertTime(raw json.RawMessage) *time.Time {
+	s := strings.Trim(strings.TrimSpace(string(raw)), `"`)
+	if s == "" || s == "null" {
+		return nil
+	}
+
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+		var t time.Time
+		switch {
+		case n > 1e14:
+			t = time.UnixMicro(n)
+		case n > 1e11:
+			t = time.UnixMilli(n)
+		default:
+			t = time.Unix(n, 0)
+		}
+		return &t
+	}
+
+	for _, layout := range certTimeLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return &t
+		}
+	}
+	log.Printf("utmclient: не удалось разобрать дату сертификата %q", s)
+	return nil
+}
+
+var certTimeLayouts = []string{
+	time.RFC3339,
+	"2006-01-02T15:04:05",
+	"2006-01-02",
+	"02.01.2006",
 }
 
 type diagnosisCert struct {
@@ -136,6 +288,9 @@ type diagnosisCert struct {
 	CN      string   `xml:"CN"`
 }
 
+// fetchFSRARID is the fallback for obtaining the FSRAR_ID when
+// /api/info/list isn't available (older/different УТМ versions) — this
+// endpoint IS documented in the official PDF.
 func (c *Client) fetchFSRARID(ctx context.Context, base string) (string, string, error) {
 	body, err := c.get(ctx, base+diagnosisPath)
 	if err != nil {
@@ -299,8 +454,9 @@ func buildQueryPartnerXML(fsrarID string) []byte {
 }
 
 // scrapeCertDates makes a best-effort attempt to read certificate validity
-// ranges off the legacy home page. See the package doc comment: this is
-// not part of the documented API and may not match every УТМ version.
+// ranges off the legacy home page — neither JSON API endpoint provides a
+// "from" date. Not part of any documented/confirmed contract; may not
+// match every УТМ version.
 func (c *Client) scrapeCertDates(ctx context.Context, base string) (egaisFrom, egaisTo, gostFrom, gostTo *time.Time, ok bool) {
 	body, err := c.get(ctx, base+homePath)
 	if err != nil {
