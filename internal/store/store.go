@@ -58,11 +58,12 @@ func (s *Store) DeleteUTM(id int64) error {
 // UpdateUTMMeta saves the operator-editable fields: the label/port chosen
 // when the УТМ was added, organization info, and certificate validity
 // dates. All of these are editable by hand because the automatic lookup
-// (QueryPartner over the async ЕГАИС round trip, and the /home date scrape)
-// is a best-effort convenience, not a guaranteed contract — mirroring how
-// 1С itself treats "Запросить из ЕГАИС" as one option alongside manual
-// entry of the same fields. Automatic polling still overwrites whatever it
-// manages to determine itself; see scheduler.PollOne.
+// (an undocumented local УТМ API, plus a /home date scrape fallback — see
+// internal/utmclient) is a best-effort convenience, not a guaranteed
+// contract on every device/version — mirroring how 1С itself treats
+// "Запросить из ЕГАИС" as one option alongside manual entry of the same
+// fields. Automatic polling still overwrites whatever it manages to
+// determine itself; see scheduler.PollOne.
 func (s *Store) UpdateUTMMeta(id int64, label string, port int, inn, kpp, orgName, installAddress string, egaisFrom, egaisTo, gostFrom, gostTo *time.Time) error {
 	_, err := s.db.Exec(`UPDATE utms SET label = ?, port = ?,
 		inn = ?, kpp = ?, org_name = ?, install_address = ?,

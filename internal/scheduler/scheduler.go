@@ -23,10 +23,11 @@ type Scheduler struct {
 }
 
 // backgroundPollTimeout bounds a single async poll kicked off from the web
-// UI (see PollOneAsync). It must comfortably exceed utmclient's own
-// replyWaitTimeout (120s) so a slow but successful ЕГАИС round trip isn't
-// cut short.
-const backgroundPollTimeout = 150 * time.Second
+// UI (see PollOneAsync). Every call utmclient makes is a local, synchronous
+// HTTP request (see internal/utmclient) bounded by its own client timeout
+// (config.PollHTTPTimeout, 10s) — this just covers the worst case of
+// several such calls (primary + fallbacks) each timing out in sequence.
+const backgroundPollTimeout = 60 * time.Second
 
 func New(st *store.Store, client *utmclient.Client) *Scheduler {
 	return &Scheduler{

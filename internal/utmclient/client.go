@@ -2,13 +2,17 @@
 // organization it belongs to (ИНН, name, licensed address) and its
 // certificate validity dates.
 //
-// PRIMARY PATH — confirmed working against a real device (not from the
-// official PDF): a small JSON API that backs the УТМ's own web home page
+// Confirmed working against a real device (not from the official PDF): a
+// small JSON API that backs the УТМ's own web home page
 // (http://localhost:8080/app/settings#certificates renders exactly this
-// data). All three calls are synchronous and local — no round trip to the
+// data). All calls are synchronous and local — no round trip to the
 // central ЕГАИС server, because a УТМ only ever serves the one
 // organization it's licensed for, so its own identity is already known
-// locally rather than looked up live.
+// locally rather than looked up live. This is why the client no longer
+// uses the officially documented but slow/async QueryPartner document
+// exchange (submit a query, wait up to minutes for a reply through the
+// central server) — it proved unreliable in practice, and everything it
+// would provide is available synchronously below instead.
 //
 //	GET /api/info/list -> {"version": "...", "ownerId": "...",
 //	  "rsa": {"startDate": "...", "expireDate": "..."},
@@ -32,42 +36,33 @@
 // versions/builds — every raw response is kept (Info.RawResponse)
 // specifically so the mapping can be extended if needed.
 //
-// SECONDARY PATH — used only when the primary path above doesn't cover
-// something (an older/different УТМ version lacking one of these
-// endpoints, or a legal entity's ИНН/name if /organizations ever comes
-// back empty for some device):
+// Two lightweight, documented fallbacks remain for when the above doesn't
+// cover something (an older/different УТМ version lacking one of these
+// endpoints):
 //
 //  1. GET /diagnosis returns the RSA certificate's subject fields as XML;
 //     its CN is the FSRAR_ID (used only if /api/info/list didn't already
-//     provide one).
-//  2. A QueryClients/QueryPartner document, addressed to that FSRAR_ID as
-//     both Owner and query subject ("СИО"), is POSTed as multipart field
-//     "xml_file" to /opt/in/QueryPartner. This is a genuinely ASYNC round
-//     trip through the central ЕГАИС server (documented in the PDF) that
-//     can take a couple of minutes, or simply never complete in practice
-//     — real-world software (1С) treats this the same way this client
-//     does: a "Запросить из ЕГАИС"-style convenience, not something to
-//     block on, with manual entry as the standing alternative (see the
-//     "Изменить УТМ" page). Its ReplyPartner reply carries ИНН, КПП,
-//     FullName/ShortName and address.
-//  3. A best-effort regex scrape of the legacy GET /home page for
-//     certificate "from" dates, which neither JSON endpoint provides.
+//     provide one). A single local call, not the document-exchange flow.
+//  2. A best-effort regex scrape of the legacy GET /home page for
+//     certificate "from" dates, on the rare chance /api/info/list lacks
+//     them on some build.
 //
-// None of these secondary lookups can turn an otherwise-successful poll
-// into a failure — only a total inability to determine even the FSRAR_ID
-// does that. Every field left zero/nil in the returned Info means "this
-// poll didn't determine it"; callers keep whatever value they already had.
+// Neither fallback can turn an otherwise-successful poll into a failure —
+// only a total inability to determine even the FSRAR_ID does that. A
+// legal entity's ИНН/name that /organizations doesn't provide is left for
+// manual entry on the "Изменить УТМ" page (see internal/store), the same
+// way 1С treats it. Every field left zero/nil in the returned Info means
+// "this poll didn't determine it"; callers keep whatever value they
+// already had.
 package utmclient
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"log"
-	"mime/multipart"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -79,25 +74,11 @@ import (
 const DefaultPort = 8080
 
 const (
-	apiInfoListPath        = "/api/info/list"
-	apiOrganizationsPath   = "/api/query/proxy/gateway/fsm/utm/organizations"
-	apiRSAPath             = "/api/rsa"
-	diagnosisPath          = "/diagnosis"
-	queryPartnerSubmitPath = "/opt/in/QueryPartner"
-	optOutPath             = "/opt/out"
-	homePath               = "/home"
-)
-
-// replyWaitTimeout bounds how long we wait for УТМ to relay a QueryPartner
-// reply from the central ЕГАИС server — a real network round trip to a
-// government server, not a local call, so it can genuinely take a while.
-// Safe to keep generous because polling always runs detached from any HTTP
-// request (see scheduler.PollOneAsync), and because its result is now only
-// a best-effort supplement (ИНН/name), never load-bearing for the poll to
-// count as successful.
-const (
-	replyWaitTimeout  = 120 * time.Second
-	replyPollInterval = 3 * time.Second
+	apiInfoListPath      = "/api/info/list"
+	apiOrganizationsPath = "/api/query/proxy/gateway/fsm/utm/organizations"
+	apiRSAPath           = "/api/rsa"
+	diagnosisPath        = "/diagnosis"
+	homePath             = "/home"
 )
 
 type Client struct {
@@ -150,25 +131,8 @@ func (c *Client) FetchInfo(ctx context.Context, ip string, port int) (*Info, err
 		return info, fmt.Errorf("не удалось определить FSRAR_ID")
 	}
 
-	// The slow, async, documented QueryPartner fallback only runs when the
-	// fast local /organizations lookup inside fetchAPIInfo didn't already
-	// fill in the ИНН — normally the common case, so this whole block is
-	// usually skipped entirely.
 	if info.INN == "" {
-		if partner, partnerRaw, err := c.fetchPartnerInfo(ctx, base, info.FSRARID); err == nil {
-			log.Printf("utmclient: %s: получен ReplyPartner, ИНН=%s", base, partner.INN)
-			info.INN = partner.INN
-			info.KPP = partner.KPP
-			info.OrgName = firstNonEmpty(partner.ShortName, partner.FullName)
-			if info.InstallAddress == "" {
-				info.InstallAddress = partner.Address
-			}
-			if partnerRaw != "" {
-				info.RawResponse += "\n--- QueryPartner/ReplyPartner ---\n" + partnerRaw
-			}
-		} else {
-			log.Printf("utmclient: %s: QueryPartner (ИНН/название организации, необязательно) failed: %v", base, err)
-		}
+		log.Printf("utmclient: %s: %s не дал ИНН — заполните организацию вручную на странице «Изменить УТМ»", base, apiOrganizationsPath)
 	}
 
 	if info.EgaisCertFrom == nil || info.GostCertFrom == nil {
@@ -194,13 +158,13 @@ func (c *Client) FetchInfo(ctx context.Context, ip string, port int) (*Info, err
 // apiInfoListResponse mirrors GET /api/info/list, confirmed against a real
 // УТМ 4.2.0 (prod contour). Sample response:
 //
-//	{"version":"4.2.0","ownerId":"030001122298",
-//	 "rsa":{"certType":"RSA","startDate":"2026-06-19 05:01:45 +0000",
-//	        "expireDate":"2027-06-19 05:11:45 +0000","isValid":"valid",
+//	{"version":"4.2.0","ownerId":"<FSRAR_ID>",
+//	 "rsa":{"certType":"RSA","startDate":"2026-01-01 00:00:00 +0000",
+//	        "expireDate":"2027-01-01 00:00:00 +0000","isValid":"valid",
 //	        "issuer":"pki.fsrar.ru"},
-//	 "gost":{"certType":"GOST","startDate":"2026-06-18 20:14:32 +0000",
-//	         "expireDate":"2027-09-18 20:14:32 +0000","isValid":"valid",
-//	         "issuer":"ООО \"Компания \"Тензор\""}}
+//	 "gost":{"certType":"GOST","startDate":"2026-01-01 00:00:00 +0000",
+//	         "expireDate":"2027-01-01 00:00:00 +0000","isValid":"valid",
+//	         "issuer":"<удостоверяющий центр>"}}
 //
 // Dates are still parsed via parseCertTime's json.RawMessage handling
 // (rather than a plain string field) since other date encodings were seen
@@ -387,153 +351,6 @@ func (c *Client) fetchFSRARID(ctx context.Context, base string) (string, string,
 	return cert.CN, string(body), nil
 }
 
-type partnerInfo struct {
-	INN       string
-	KPP       string
-	FullName  string
-	ShortName string
-	Address   string
-}
-
-// replyPartnerDoc mirrors the ReplyPartner XML shape from the spec. Struct
-// tags deliberately omit namespace prefixes (ns:, rc:, oref:) — encoding/xml
-// matches on local name when no namespace is given in the tag, which is
-// enough here since the field names aren't reused elsewhere in the document.
-type replyPartnerDoc struct {
-	XMLName  xml.Name `xml:"Documents"`
-	Document struct {
-		ReplyClient struct {
-			Clients struct {
-				Client []struct {
-					INN       string `xml:"INN"`
-					KPP       string `xml:"KPP"`
-					FullName  string `xml:"FullName"`
-					ShortName string `xml:"ShortName"`
-					Address   struct {
-						Description string `xml:"description"`
-					} `xml:"address"`
-				} `xml:"Client"`
-			} `xml:"Clients"`
-		} `xml:"ReplyClient"`
-	} `xml:"Document"`
-}
-
-func (c *Client) fetchPartnerInfo(ctx context.Context, base, fsrarID string) (*partnerInfo, string, error) {
-	receiptBody, err := c.postMultipart(ctx, base+queryPartnerSubmitPath, "xml_file", "query.xml", buildQueryPartnerXML(fsrarID))
-	if err != nil {
-		return nil, string(receiptBody), fmt.Errorf("отправка QueryPartner: %w", err)
-	}
-
-	var receipt struct {
-		XMLName xml.Name `xml:"A"`
-		URL     string   `xml:"url"`
-	}
-	if err := xml.Unmarshal(receiptBody, &receipt); err != nil || strings.TrimSpace(receipt.URL) == "" {
-		return nil, string(receiptBody), fmt.Errorf("не удалось разобрать квитанцию УТМ")
-	}
-	replyID := strings.TrimSpace(receipt.URL)
-
-	log.Printf("utmclient: %s: QueryPartner отправлен, ждём ReplyPartner (replyId=%s)", base, replyID)
-	docURL, err := c.waitForReply(ctx, base, replyID)
-	if err != nil {
-		// Keep the receipt visible in RawResponse even on timeout: it proves
-		// the УТМ accepted the submission and which replyId we were waiting
-		// on, which is the key fact when diagnosing "reply never arrived".
-		return nil, string(receiptBody), err
-	}
-
-	replyBody, err := c.postAndConsume(ctx, docURL)
-	if err != nil {
-		return nil, string(replyBody), fmt.Errorf("получение ReplyPartner: %w", err)
-	}
-
-	var doc replyPartnerDoc
-	if err := xml.Unmarshal(replyBody, &doc); err != nil {
-		return nil, string(replyBody), fmt.Errorf("разбор ReplyPartner: %w", err)
-	}
-	clients := doc.Document.ReplyClient.Clients.Client
-	if len(clients) == 0 {
-		return nil, string(replyBody), fmt.Errorf("ReplyPartner не содержит данных об организации")
-	}
-	cl := clients[0]
-	return &partnerInfo{
-		INN:       cl.INN,
-		KPP:       cl.KPP,
-		FullName:  cl.FullName,
-		ShortName: cl.ShortName,
-		Address:   strings.TrimSpace(cl.Address.Description),
-	}, string(replyBody), nil
-}
-
-// waitForReply polls /opt/out for the specific replyId our QueryPartner
-// submission was given, returning the full URL of the resulting document.
-func (c *Client) waitForReply(ctx context.Context, base, replyID string) (string, error) {
-	deadline := time.Now().Add(replyWaitTimeout)
-	attempt := 0
-	for {
-		attempt++
-		body, err := c.get(ctx, fmt.Sprintf("%s%s?replyId=%s", base, optOutPath, replyID))
-		if err != nil {
-			log.Printf("utmclient: %s: /opt/out?replyId=%s попытка %d: %v", base, replyID, attempt, err)
-		} else {
-			var listing struct {
-				XMLName xml.Name `xml:"A"`
-				URLs    []struct {
-					Value string `xml:",chardata"`
-				} `xml:"url"`
-			}
-			if xml.Unmarshal(body, &listing) == nil && len(listing.URLs) > 0 {
-				if url := strings.TrimSpace(listing.URLs[0].Value); url != "" {
-					log.Printf("utmclient: %s: ReplyPartner получен после %d попыт(ки/ок): %s", base, attempt, url)
-					return url, nil
-				}
-			}
-			if attempt%5 == 0 {
-				elapsed := (replyWaitTimeout - time.Until(deadline)).Round(time.Second)
-				log.Printf("utmclient: %s: /opt/out?replyId=%s попытка %d — ещё не пришло (%s с начала ожидания)", base, replyID, attempt, elapsed)
-			}
-		}
-
-		if time.Now().After(deadline) {
-			return "", fmt.Errorf("ответ ЕГАИС (ReplyPartner) не получен за %s — проверьте, что УТМ подключен к серверу ЕГАИС", replyWaitTimeout)
-		}
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(replyPollInterval):
-		}
-	}
-}
-
-const queryPartnerTemplate = `<?xml version="1.0" encoding="UTF-8"?>
-<ns:Documents Version="1.0"
-xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ns="http://fsrar.ru/WEGAIS/WB_DOC_SINGLE_01"
-xmlns:qp="http://fsrar.ru/WEGAIS/QueryParameters">
-<ns:Owner>
-  <ns:FSRAR_ID>%[1]s</ns:FSRAR_ID>
-</ns:Owner>
-<ns:Document>
-<ns:QueryClients>
-  <qp:Parameters>
-    <qp:Parameter>
-      <qp:Name>СИО</qp:Name>
-      <qp:Value>%[1]s</qp:Value>
-    </qp:Parameter>
-  </qp:Parameters>
-</ns:QueryClients>
-</ns:Document>
-</ns:Documents>
-`
-
-// buildQueryPartnerXML asks for the УТМ's own organization/subdivision
-// record by querying "СИО" (== FSRAR_ID) rather than "ИНН" — the latter
-// would require already knowing the very INN we're trying to discover.
-func buildQueryPartnerXML(fsrarID string) []byte {
-	var escaped bytes.Buffer
-	_ = xml.EscapeText(&escaped, []byte(fsrarID))
-	return []byte(fmt.Sprintf(queryPartnerTemplate, escaped.String()))
-}
-
 // scrapeCertDates makes a best-effort attempt to read certificate validity
 // ranges off the legacy home page — neither JSON API endpoint provides a
 // "from" date. Not part of any documented/confirmed contract; may not
@@ -578,36 +395,6 @@ func (c *Client) get(ctx context.Context, url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.do(req)
-}
-
-func (c *Client) postAndConsume(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	return c.do(req)
-}
-
-func (c *Client) postMultipart(ctx context.Context, url, field, filename string, content []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
-	part, err := w.CreateFormFile(field, filename)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := part.Write(content); err != nil {
-		return nil, err
-	}
-	if err := w.Close(); err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &buf)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", w.FormDataContentType())
 	return c.do(req)
 }
 

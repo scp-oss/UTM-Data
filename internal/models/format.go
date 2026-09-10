@@ -9,14 +9,14 @@ import (
 
 // ipFioRe matches the "ИП <ФАМИЛИЯ> <ИМЯ> <ОТЧЕСТВО>" shape that
 // individual entrepreneurs' names come back as from a УТМ (e.g.
-// "ИП СИДОРКИН АЛЕКСЕЙ ВЛАДИМИРОВИЧ" or the unabbreviated
+// "ИП ИВАНОВ ПЁТР СЕРГЕЕВИЧ" or the unabbreviated
 // "ИНДИВИДУАЛЬНЫЙ ПРЕДПРИНИМАТЕЛЬ ...").
 var ipFioRe = regexp.MustCompile(`(?i)^(?:ип|индивидуальный предприниматель)\s+`)
 
 // PrettyOrgName shortens a full-caps individual entrepreneur name for
-// display — "ИП СИДОРКИН АЛЕКСЕЙ ВЛАДИМИРОВИЧ" becomes "ИП Сидоркин А.В." —
-// leaving anything else (legal entities, unrecognized shapes) unchanged.
-// This is display-only: the stored/raw name is never modified by it.
+// display — "ИП ИВАНОВ ПЁТР СЕРГЕЕВИЧ" becomes "ИП Иванов П.С." — leaving
+// anything else (legal entities, unrecognized shapes) unchanged. This is
+// display-only: the stored/raw name is never modified by it.
 func PrettyOrgName(name string) string {
 	name = strings.TrimSpace(name)
 	loc := ipFioRe.FindStringIndex(name)
