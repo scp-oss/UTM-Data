@@ -1,0 +1,62 @@
+{{define "content"}}
+<div class="card" style="max-width:560px;">
+  <strong>Расписание опроса</strong>
+  <form method="post" action="/settings">
+    <div class="row">
+      <div>
+        <label for="poll_time_1">Время опроса 1</label>
+        <input type="text" id="poll_time_1" name="poll_time_1" value="{{.Settings.PollTime1}}" placeholder="09:00">
+      </div>
+      <div>
+        <label for="poll_time_2">Время опроса 2 (необязательно)</label>
+        <input type="text" id="poll_time_2" name="poll_time_2" value="{{.Settings.PollTime2}}" placeholder="21:00">
+      </div>
+    </div>
+    <div class="hint">Формат ЧЧ:ММ, время сервера. Оставьте поле 2 пустым, если опрос нужен раз в сутки.</div>
+
+    <label for="telegram_bot_token">Токен Telegram-бота</label>
+    <input type="text" id="telegram_bot_token" name="telegram_bot_token" value="{{.Settings.TelegramBotToken}}" placeholder="123456789:AA...">
+    <div class="hint">Получить токен можно у <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>.</div>
+
+    <div style="margin-top:20px;">
+      <button class="btn" type="submit">Сохранить</button>
+    </div>
+  </form>
+</div>
+
+<div class="card" style="max-width:560px;">
+  <strong>Получатели уведомлений в Telegram</strong>
+  <div class="hint">Уведомления придут за 30, 10, 5, 2 и 1 день до окончания каждого сертификата.</div>
+  <table style="margin-top:10px;">
+    <thead><tr><th>Chat ID</th><th>Название</th><th></th></tr></thead>
+    <tbody>
+      {{if not .Chats}}<tr><td colspan="3" class="muted">Получатели не добавлены</td></tr>{{end}}
+      {{range .Chats}}
+      <tr>
+        <td>{{.ChatID}}</td>
+        <td>{{.Label}}</td>
+        <td><form class="inline" method="post" action="/settings/telegram/{{.ID}}/delete"><button class="btn danger" type="submit">Удалить</button></form></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+
+  <form method="post" action="/settings/telegram/add" style="margin-top:14px;">
+    <div class="row">
+      <div>
+        <label for="chat_id">Chat ID</label>
+        <input type="text" id="chat_id" name="chat_id" placeholder="123456789 или -1001234567890" required>
+      </div>
+      <div>
+        <label for="chat_label">Название (необязательно)</label>
+        <input type="text" id="chat_label" name="chat_label" placeholder="Иванов И.И.">
+      </div>
+    </div>
+    <div class="hint">Chat ID можно узнать, написав боту <a href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a>, либо добавив бота в группу.</div>
+    <div style="margin-top:14px; display:flex; gap:8px;">
+      <button class="btn" type="submit">Добавить получателя</button>
+      <form class="inline" method="post" action="/settings/telegram/test"><button class="btn secondary" type="submit">Отправить тестовое сообщение всем</button></form>
+    </div>
+  </form>
+</div>
+{{end}}

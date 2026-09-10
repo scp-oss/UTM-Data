@@ -1,0 +1,11 @@
+services:
+  utm-dashboard:
+    build: .
+    ports:
+      - "8088:8088"
+    volumes:
+      - ./data:/data
+    environment:
+      TZ: Europe/Moscow
+      DB_PATH: /data/utm-dashboard.db
+    restart: unless-stopped

@@ -1,0 +1,213 @@
+// Package scheduler drives periodic УТМ polling and expiry notifications.
+package scheduler
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"sync"
+	"time"
+
+	"github.com/scp-oss/utm-data/internal/models"
+	"github.com/scp-oss/utm-data/internal/notifier"
+	"github.com/scp-oss/utm-data/internal/store"
+	"github.com/scp-oss/utm-data/internal/utmclient"
+)
+
+type Scheduler struct {
+	store  *store.Store
+	client *utmclient.Client
+
+	mu          sync.Mutex
+	lastRunDate map[string]string // slot name -> "2006-01-02" already triggered
+}
+
+func New(st *store.Store, client *utmclient.Client) *Scheduler {
+	return &Scheduler{
+		store:       st,
+		client:      client,
+		lastRunDate: make(map[string]string),
+	}
+}
+
+// Run blocks, checking every minute whether one of the two configured daily
+// poll times has just been reached, until ctx is canceled.
+func (s *Scheduler) Run(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			s.tick(ctx, now)
+		}
+	}
+}
+
+func (s *Scheduler) tick(ctx context.Context, now time.Time) {
+	settings, err := s.store.GetSettings()
+	if err != nil {
+		log.Printf("scheduler: read settings: %v", err)
+		return
+	}
+
+	hhmm := now.Format("15:04")
+	today := now.Format("2006-01-02")
+
+	slots := []struct{ name, value string }{
+		{"1", settings.PollTime1},
+		{"2", settings.PollTime2},
+	}
+
+	for _, slot := range slots {
+		if slot.value == "" || slot.value != hhmm {
+			continue
+		}
+
+		s.mu.Lock()
+		already := s.lastRunDate[slot.name] == today
+		s.lastRunDate[slot.name] = today
+		s.mu.Unlock()
+
+		if already {
+			continue
+		}
+
+		go s.RunCycle(ctx)
+	}
+}
+
+// RunCycle polls every registered УТМ and then checks/sends expiry
+// notifications. It is used by the scheduled ticks, by the manual
+// "poll now" action and immediately after a new УТМ is added.
+func (s *Scheduler) RunCycle(ctx context.Context) {
+	utms, err := s.store.ListUTMs()
+	if err != nil {
+		log.Printf("scheduler: list utms: %v", err)
+		return
+	}
+	for _, u := range utms {
+		s.PollOne(ctx, u)
+	}
+	s.CheckAndNotify(ctx)
+}
+
+// PollOne fetches fresh data for a single УТМ and persists the result.
+func (s *Scheduler) PollOne(ctx context.Context, u models.UTM) {
+	info, err := s.client.FetchInfo(ctx, u.IPAddress, u.Port)
+
+	result := store.PollResult{OK: err == nil}
+	if err != nil {
+		result.Error = err.Error()
+		log.Printf("poll утм #%d (%s:%d): %v", u.ID, u.IPAddress, u.Port, err)
+	}
+	if info != nil {
+		result.RawResponse = info.RawResponse
+		if err == nil {
+			result.INN = info.INN
+			result.KPP = info.KPP
+			result.OrgName = info.OrgName
+			result.InstallAddress = info.InstallAddress
+			result.EgaisCertFrom = info.EgaisCertFrom
+			result.EgaisCertTo = info.EgaisCertTo
+			result.GostCertFrom = info.GostCertFrom
+			result.GostCertTo = info.GostCertTo
+		}
+	}
+
+	if saveErr := s.store.SaveUTMPollResult(u.ID, result); saveErr != nil {
+		log.Printf("poll утм #%d: save result: %v", u.ID, saveErr)
+	}
+}
+
+// CheckAndNotify scans all УТМ certificates and sends Telegram alerts for
+// any (certificate, threshold) combination that has become due and was not
+// already sent for the certificate's current expiry date.
+func (s *Scheduler) CheckAndNotify(ctx context.Context) {
+	settings, err := s.store.GetSettings()
+	if err != nil {
+		log.Printf("notify: read settings: %v", err)
+		return
+	}
+	if settings.TelegramBotToken == "" {
+		return
+	}
+
+	chats, err := s.store.ListTelegramChats()
+	if err != nil {
+		log.Printf("notify: list chats: %v", err)
+		return
+	}
+	if len(chats) == 0 {
+		return
+	}
+	chatIDs := make([]string, len(chats))
+	for i, c := range chats {
+		chatIDs[i] = c.ChatID
+	}
+
+	utms, err := s.store.ListUTMs()
+	if err != nil {
+		log.Printf("notify: list utms: %v", err)
+		return
+	}
+
+	now := time.Now()
+	for _, u := range utms {
+		s.checkCert(now, settings.TelegramBotToken, chatIDs, u, models.CertEgais, u.EgaisCertTo)
+		s.checkCert(now, settings.TelegramBotToken, chatIDs, u, models.CertGost, u.GostCertTo)
+	}
+}
+
+func (s *Scheduler) checkCert(now time.Time, token string, chatIDs []string, u models.UTM, certType models.CertType, expiry *time.Time) {
+	if expiry == nil {
+		return
+	}
+	daysLeft := int(expiry.Sub(now).Hours() / 24)
+	if daysLeft < 0 {
+		return
+	}
+
+	// Thresholds are checked from farthest to closest so that, if a УТМ was
+	// just added or the app was offline for a while, all missed thresholds
+	// up to the current one are sent (each still only once).
+	for _, threshold := range models.NotificationThresholds {
+		if daysLeft > threshold {
+			continue
+		}
+
+		sent, err := s.store.NotificationAlreadySent(u.ID, certType, *expiry, threshold)
+		if err != nil {
+			log.Printf("notify: check sent state утм #%d: %v", u.ID, err)
+			continue
+		}
+		if sent {
+			continue
+		}
+
+		text := notificationText(u, certType, *expiry, daysLeft)
+		for _, sendErr := range notifier.SendToAll(token, chatIDs, text) {
+			log.Printf("notify: %v", sendErr)
+		}
+
+		if err := s.store.MarkNotificationSent(u.ID, certType, *expiry, threshold); err != nil {
+			log.Printf("notify: mark sent утм #%d: %v", u.ID, err)
+		}
+	}
+}
+
+func notificationText(u models.UTM, certType models.CertType, expiry time.Time, daysLeft int) string {
+	name := u.Label
+	if name == "" {
+		name = u.OrgName
+	}
+	if name == "" {
+		name = u.IPAddress
+	}
+	return fmt.Sprintf(
+		"⚠️ УТМ «%s» (%s): %s истекает %s (осталось %d дн.)",
+		name, u.IPAddress, certType.Label(), expiry.Format("02.01.2006"), daysLeft,
+	)
+}
