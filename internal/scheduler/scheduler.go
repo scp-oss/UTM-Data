@@ -24,9 +24,9 @@ type Scheduler struct {
 
 // backgroundPollTimeout bounds a single async poll kicked off from the web
 // UI (see PollOneAsync). It must comfortably exceed utmclient's own
-// replyWaitTimeout (45s) so a slow but successful ЕГАИС round trip isn't
+// replyWaitTimeout (120s) so a slow but successful ЕГАИС round trip isn't
 // cut short.
-const backgroundPollTimeout = 90 * time.Second
+const backgroundPollTimeout = 150 * time.Second
 
 func New(st *store.Store, client *utmclient.Client) *Scheduler {
 	return &Scheduler{
@@ -125,6 +125,7 @@ func (s *Scheduler) PollOne(ctx context.Context, u models.UTM) {
 
 	result := store.PollResult{
 		OK:             err == nil,
+		FSRARID:        u.FSRARID,
 		INN:            u.INN,
 		KPP:            u.KPP,
 		OrgName:        u.OrgName,
@@ -140,6 +141,9 @@ func (s *Scheduler) PollOne(ctx context.Context, u models.UTM) {
 	}
 	if info != nil {
 		result.RawResponse = info.RawResponse
+		if info.FSRARID != "" {
+			result.FSRARID = info.FSRARID
+		}
 		if info.INN != "" {
 			result.INN = info.INN
 		}

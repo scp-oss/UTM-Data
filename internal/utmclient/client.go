@@ -41,6 +41,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"regexp"
@@ -60,11 +61,12 @@ const (
 
 // replyWaitTimeout bounds how long we wait for УТМ to relay a reply from
 // the central ЕГАИС server — a real network round trip to a government
-// server, not a local call, so it needs much more room than a typical
-// request.
+// server, not a local call, so it can genuinely take a while. This is safe
+// to keep generous because polling now always runs detached from any HTTP
+// request (see scheduler.PollOneAsync).
 const (
-	replyWaitTimeout  = 45 * time.Second
-	replyPollInterval = 2 * time.Second
+	replyWaitTimeout  = 120 * time.Second
+	replyPollInterval = 3 * time.Second
 )
 
 type Client struct {
@@ -100,16 +102,20 @@ func (c *Client) FetchInfo(ctx context.Context, ip string, port int) (*Info, err
 	fsrarID, diagRaw, err := c.fetchFSRARID(ctx, base)
 	info := &Info{FSRARID: fsrarID, RawResponse: diagRaw}
 	if err != nil {
+		log.Printf("utmclient: %s: /diagnosis failed: %v", base, err)
 		return info, fmt.Errorf("получение FSRAR_ID (%s%s): %w", base, diagnosisPath, err)
 	}
+	log.Printf("utmclient: %s: FSRAR_ID = %s", base, fsrarID)
 
 	partner, partnerRaw, err := c.fetchPartnerInfo(ctx, base, fsrarID)
 	if partnerRaw != "" {
 		info.RawResponse = partnerRaw
 	}
 	if err != nil {
+		log.Printf("utmclient: %s: QueryPartner failed: %v", base, err)
 		return info, fmt.Errorf("получение справочника организации (QueryPartner): %w", err)
 	}
+	log.Printf("utmclient: %s: получен ReplyPartner, ИНН=%s", base, partner.INN)
 	info.INN = partner.INN
 	info.KPP = partner.KPP
 	info.OrgName = firstNonEmpty(partner.ShortName, partner.FullName)
@@ -191,9 +197,13 @@ func (c *Client) fetchPartnerInfo(ctx context.Context, base, fsrarID string) (*p
 	}
 	replyID := strings.TrimSpace(receipt.URL)
 
+	log.Printf("utmclient: %s: QueryPartner отправлен, ждём ReplyPartner (replyId=%s)", base, replyID)
 	docURL, err := c.waitForReply(ctx, base, replyID)
 	if err != nil {
-		return nil, "", err
+		// Keep the receipt visible in RawResponse even on timeout: it proves
+		// the УТМ accepted the submission and which replyId we were waiting
+		// on, which is the key fact when diagnosing "reply never arrived".
+		return nil, string(receiptBody), err
 	}
 
 	replyBody, err := c.postAndConsume(ctx, docURL)
@@ -223,9 +233,13 @@ func (c *Client) fetchPartnerInfo(ctx context.Context, base, fsrarID string) (*p
 // submission was given, returning the full URL of the resulting document.
 func (c *Client) waitForReply(ctx context.Context, base, replyID string) (string, error) {
 	deadline := time.Now().Add(replyWaitTimeout)
+	attempt := 0
 	for {
+		attempt++
 		body, err := c.get(ctx, fmt.Sprintf("%s%s?replyId=%s", base, optOutPath, replyID))
-		if err == nil {
+		if err != nil {
+			log.Printf("utmclient: %s: /opt/out?replyId=%s попытка %d: %v", base, replyID, attempt, err)
+		} else {
 			var listing struct {
 				XMLName xml.Name `xml:"A"`
 				URLs    []struct {
@@ -234,8 +248,13 @@ func (c *Client) waitForReply(ctx context.Context, base, replyID string) (string
 			}
 			if xml.Unmarshal(body, &listing) == nil && len(listing.URLs) > 0 {
 				if url := strings.TrimSpace(listing.URLs[0].Value); url != "" {
+					log.Printf("utmclient: %s: ReplyPartner получен после %d попыт(ки/ок): %s", base, attempt, url)
 					return url, nil
 				}
+			}
+			if attempt%5 == 0 {
+				elapsed := (replyWaitTimeout - time.Until(deadline)).Round(time.Second)
+				log.Printf("utmclient: %s: /opt/out?replyId=%s попытка %d — ещё не пришло (%s с начала ожидания)", base, replyID, attempt, elapsed)
 			}
 		}
 

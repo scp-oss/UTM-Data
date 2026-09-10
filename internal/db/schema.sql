@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS utms (
     label              TEXT NOT NULL DEFAULT '',
     ip_address         TEXT NOT NULL,
     port               INTEGER NOT NULL DEFAULT 8080,
+    fsrar_id           TEXT NOT NULL DEFAULT '',
     inn                TEXT NOT NULL DEFAULT '',
     kpp                TEXT NOT NULL DEFAULT '',
     org_name           TEXT NOT NULL DEFAULT '',

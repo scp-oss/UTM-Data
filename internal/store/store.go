@@ -91,7 +91,7 @@ func (s *Store) ListUTMs() ([]models.UTM, error) {
 	return out, rows.Err()
 }
 
-const utmSelect = `SELECT id, label, ip_address, port, inn, kpp, org_name, install_address,
+const utmSelect = `SELECT id, label, ip_address, port, fsrar_id, inn, kpp, org_name, install_address,
 	egais_cert_from, egais_cert_to, gost_cert_from, gost_cert_to,
 	last_polled_at, last_poll_ok, last_poll_error, last_raw_response, created_at
 	FROM utms`
@@ -106,7 +106,7 @@ func scanUTM(row scanner) (*models.UTM, error) {
 	var lastPollOK int
 	var createdAt string
 	err := row.Scan(
-		&u.ID, &u.Label, &u.IPAddress, &u.Port, &u.INN, &u.KPP, &u.OrgName, &u.InstallAddress,
+		&u.ID, &u.Label, &u.IPAddress, &u.Port, &u.FSRARID, &u.INN, &u.KPP, &u.OrgName, &u.InstallAddress,
 		&egaisFrom, &egaisTo, &gostFrom, &gostTo,
 		&lastPolledAt, &lastPollOK, &u.LastPollError, &u.LastRawResponse, &createdAt,
 	)
@@ -127,6 +127,7 @@ func scanUTM(row scanner) (*models.UTM, error) {
 
 // PollResult carries the outcome of polling a УТМ's HTTP API.
 type PollResult struct {
+	FSRARID        string
 	INN            string
 	KPP            string
 	OrgName        string
@@ -142,11 +143,11 @@ type PollResult struct {
 
 func (s *Store) SaveUTMPollResult(id int64, r PollResult) error {
 	_, err := s.db.Exec(`UPDATE utms SET
-		inn = ?, kpp = ?, org_name = ?, install_address = ?,
+		fsrar_id = ?, inn = ?, kpp = ?, org_name = ?, install_address = ?,
 		egais_cert_from = ?, egais_cert_to = ?, gost_cert_from = ?, gost_cert_to = ?,
 		last_polled_at = ?, last_poll_ok = ?, last_poll_error = ?, last_raw_response = ?
 		WHERE id = ?`,
-		r.INN, r.KPP, r.OrgName, r.InstallAddress,
+		r.FSRARID, r.INN, r.KPP, r.OrgName, r.InstallAddress,
 		formatTime(r.EgaisCertFrom), formatTime(r.EgaisCertTo), formatTime(r.GostCertFrom), formatTime(r.GostCertTo),
 		time.Now().UTC().Format(timeLayout), boolToInt(r.OK), r.Error, r.RawResponse,
 		id,

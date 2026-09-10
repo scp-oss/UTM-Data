@@ -58,6 +58,7 @@ func migrate(sqlDB *sql.DB) error {
 		`ALTER TABLE settings ADD COLUMN telegram_relay_base_url TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE settings ADD COLUMN telegram_relay_auth_key TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE telegram_chats ADD COLUMN utm_id INTEGER REFERENCES utms(id) ON DELETE CASCADE`,
+		`ALTER TABLE utms ADD COLUMN fsrar_id TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range stmts {
 		if _, err := sqlDB.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {

@@ -27,6 +27,7 @@
         <td>
           <strong>{{if .Label}}{{.Label}}{{else}}УТМ #{{.ID}}{{end}}</strong><br>
           <span class="muted">{{.IPAddress}}:{{.Port}}</span>
+          {{if .FSRARID}}<br><span class="muted">FSRAR_ID {{.FSRARID}}</span>{{end}}
         </td>
         <td>
           {{if .OrgName}}{{.OrgName}}<br><span class="muted">ИНН {{.INN}}{{if .KPP}} / КПП {{.KPP}}{{end}}</span>{{else}}<span class="muted">нет данных</span>{{end}}

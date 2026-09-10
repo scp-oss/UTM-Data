@@ -9,6 +9,7 @@ type UTM struct {
 	Label           string
 	IPAddress       string
 	Port            int
+	FSRARID         string
 	INN             string
 	KPP             string
 	OrgName         string
