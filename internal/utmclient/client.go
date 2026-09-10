@@ -3,27 +3,39 @@
 // certificate validity dates.
 //
 // PRIMARY PATH — confirmed working against a real device (not from the
-// official PDF): a small JSON API that backs the УТМ's own web home page.
+// official PDF): a small JSON API that backs the УТМ's own web home page
+// (http://localhost:8080/app/settings#certificates renders exactly this
+// data). All three calls are synchronous and local — no round trip to the
+// central ЕГАИС server, because a УТМ only ever serves the one
+// organization it's licensed for, so its own identity is already known
+// locally rather than looked up live.
 //
 //	GET /api/info/list -> {"version": "...", "ownerId": "...",
-//	  "rsa": {"expireDate": "..."}, "gost": {"expireDate": "..."}}
-//	  ownerId is the FSRAR_ID; rsa/gost.expireDate are the two
-//	  certificates' "to" dates. This is a plain, synchronous, local call
-//	  — no round trip to the central ЕГАИС server.
+//	  "rsa": {"startDate": "...", "expireDate": "..."},
+//	  "gost": {"startDate": "...", "expireDate": "..."}}
+//	  ownerId is the FSRAR_ID; rsa/gost carry both dates of each
+//	  certificate's validity period.
+//	GET /api/query/proxy/gateway/fsm/utm/organizations -> [{"owner_ID": "...",
+//	  "full_Name": "...", "short_Name": "...", "inn": "...",
+//	  "dejure_Address": "...", "fact_Address": "..."}]
+//	  a one-entry (per owner_ID) array with the organization's own ИНН,
+//	  name and address — no "kpp" field was present in the one confirmed
+//	  sample, an individual entrepreneur (ИП), which has no KPP by law;
+//	  a legal entity's response may include one.
 //	GET /api/rsa -> {"rows": [{"pass_owner_id": "...", "Fact_Address": "..."}, ...]}
-//	  filtering rows by pass_owner_id == ownerId gives the licensed
-//	  installation address for this УТМ.
+//	  filtering rows by pass_owner_id == ownerId gives the same
+//	  installation address as a fallback, in case /organizations doesn't.
 //
 // This is undocumented in ФСРАР's public "Технические требования УТМ"
 // PDF (which only covers the document-exchange protocol), so field names
-// beyond what's been confirmed (version/ownerId/rsa.expireDate/
-// gost.expireDate/pass_owner_id/Fact_Address) are unverified — every raw
-// response is kept (Info.RawResponse) specifically so the mapping can be
-// extended once more of the real shape is seen. It also doesn't cover
-// ИНН/КПП/organization name at all, or either certificate's "from" date.
+// beyond what's been confirmed above are unverified on other УТМ
+// versions/builds — every raw response is kept (Info.RawResponse)
+// specifically so the mapping can be extended if needed.
 //
-// SECONDARY PATH — for whatever the primary path doesn't cover, and as a
-// fallback if /api/info/list isn't available on some УТМ version:
+// SECONDARY PATH — used only when the primary path above doesn't cover
+// something (an older/different УТМ version lacking one of these
+// endpoints, or a legal entity's ИНН/name if /organizations ever comes
+// back empty for some device):
 //
 //  1. GET /diagnosis returns the RSA certificate's subject fields as XML;
 //     its CN is the FSRAR_ID (used only if /api/info/list didn't already
@@ -68,6 +80,7 @@ const DefaultPort = 8080
 
 const (
 	apiInfoListPath        = "/api/info/list"
+	apiOrganizationsPath   = "/api/query/proxy/gateway/fsm/utm/organizations"
 	apiRSAPath             = "/api/rsa"
 	diagnosisPath          = "/diagnosis"
 	queryPartnerSubmitPath = "/opt/in/QueryPartner"
@@ -137,22 +150,25 @@ func (c *Client) FetchInfo(ctx context.Context, ip string, port int) (*Info, err
 		return info, fmt.Errorf("не удалось определить FSRAR_ID")
 	}
 
-	// Best effort only, from here on: a miss on either does not fail the
-	// poll — FSRAR_ID (and, usually, certificate expiry dates) are already
-	// good from the primary path above.
-	if partner, partnerRaw, err := c.fetchPartnerInfo(ctx, base, info.FSRARID); err == nil {
-		log.Printf("utmclient: %s: получен ReplyPartner, ИНН=%s", base, partner.INN)
-		info.INN = partner.INN
-		info.KPP = partner.KPP
-		info.OrgName = firstNonEmpty(partner.ShortName, partner.FullName)
-		if info.InstallAddress == "" {
-			info.InstallAddress = partner.Address
+	// The slow, async, documented QueryPartner fallback only runs when the
+	// fast local /organizations lookup inside fetchAPIInfo didn't already
+	// fill in the ИНН — normally the common case, so this whole block is
+	// usually skipped entirely.
+	if info.INN == "" {
+		if partner, partnerRaw, err := c.fetchPartnerInfo(ctx, base, info.FSRARID); err == nil {
+			log.Printf("utmclient: %s: получен ReplyPartner, ИНН=%s", base, partner.INN)
+			info.INN = partner.INN
+			info.KPP = partner.KPP
+			info.OrgName = firstNonEmpty(partner.ShortName, partner.FullName)
+			if info.InstallAddress == "" {
+				info.InstallAddress = partner.Address
+			}
+			if partnerRaw != "" {
+				info.RawResponse += "\n--- QueryPartner/ReplyPartner ---\n" + partnerRaw
+			}
+		} else {
+			log.Printf("utmclient: %s: QueryPartner (ИНН/название организации, необязательно) failed: %v", base, err)
 		}
-		if partnerRaw != "" {
-			info.RawResponse += "\n--- QueryPartner/ReplyPartner ---\n" + partnerRaw
-		}
-	} else {
-		log.Printf("utmclient: %s: QueryPartner (ИНН/название организации, необязательно) failed: %v", base, err)
 	}
 
 	if info.EgaisCertFrom == nil || info.GostCertFrom == nil {
@@ -210,10 +226,26 @@ type apiRSAResponse struct {
 	} `json:"rows"`
 }
 
+// organizationEntry mirrors one row of
+// GET /api/query/proxy/gateway/fsm/utm/organizations, confirmed against a
+// real device via its browser DevTools Network tab. Unlike QueryPartner,
+// this answers instantly with no round trip to the central ЕГАИС server —
+// a УТМ only ever serves the one organization it's licensed for, so this
+// is just its own already-known identity, not a live lookup.
+type organizationEntry struct {
+	OwnerID       string `json:"owner_ID"`
+	FullName      string `json:"full_Name"`
+	ShortName     string `json:"short_Name"`
+	INN           string `json:"inn"`
+	KPP           string `json:"kpp"` // absent for individual entrepreneurs (ИП); unconfirmed for legal entities
+	DejureAddress string `json:"dejure_Address"`
+	FactAddress   string `json:"fact_Address"`
+}
+
 // fetchAPIInfo is the primary discovery path. It sets whatever it can
 // directly on info and returns an error only when /api/info/list itself
-// couldn't be read/parsed or didn't carry an ownerId — a failure of the
-// secondary /api/rsa call (address lookup) is logged but not fatal.
+// couldn't be read/parsed or didn't carry an ownerId — failures of the
+// secondary /organizations and /api/rsa calls are logged but not fatal.
 func (c *Client) fetchAPIInfo(ctx context.Context, base string, info *Info) error {
 	body, err := c.get(ctx, base+apiInfoListPath)
 	if len(body) > 0 {
@@ -238,23 +270,56 @@ func (c *Client) fetchAPIInfo(ctx context.Context, base string, info *Info) erro
 	info.GostCertTo = parseCertTime(resp.Gost.ExpireDate)
 	log.Printf("utmclient: %s: %s ok: ownerId=%s версия=%s", base, apiInfoListPath, resp.OwnerID, resp.Version)
 
-	addrBody, addrErr := c.get(ctx, base+apiRSAPath)
-	if addrErr != nil {
-		log.Printf("utmclient: %s: %s (адрес установки, необязательно) failed: %v", base, apiRSAPath, addrErr)
-		return nil
-	}
-	info.RawResponse += "\n--- " + apiRSAPath + " ---\n" + string(addrBody)
-
-	var rsaResp apiRSAResponse
-	if err := json.Unmarshal(addrBody, &rsaResp); err != nil {
-		log.Printf("utmclient: %s: разбор %s: %v", base, apiRSAPath, err)
-		return nil
-	}
-	for _, row := range rsaResp.Rows {
-		if row.PassOwnerID == resp.OwnerID && row.FactAddress != "" {
-			info.InstallAddress = row.FactAddress
-			break
+	if orgBody, err := c.get(ctx, base+apiOrganizationsPath); err != nil {
+		log.Printf("utmclient: %s: %s (ИНН/название, необязательно) failed: %v", base, apiOrganizationsPath, err)
+	} else {
+		info.RawResponse += "\n--- " + apiOrganizationsPath + " ---\n" + string(orgBody)
+		var orgs []organizationEntry
+		if err := json.Unmarshal(orgBody, &orgs); err != nil {
+			log.Printf("utmclient: %s: разбор %s: %v", base, apiOrganizationsPath, err)
+		} else if org := findOrganization(orgs, resp.OwnerID); org != nil {
+			info.INN = org.INN
+			info.KPP = org.KPP
+			info.OrgName = firstNonEmpty(org.ShortName, org.FullName)
+			info.InstallAddress = firstNonEmpty(org.FactAddress, org.DejureAddress)
+			log.Printf("utmclient: %s: %s ok: ИНН=%s", base, apiOrganizationsPath, org.INN)
 		}
+	}
+
+	if info.InstallAddress == "" {
+		if addrBody, err := c.get(ctx, base+apiRSAPath); err != nil {
+			log.Printf("utmclient: %s: %s (адрес установки, необязательно) failed: %v", base, apiRSAPath, err)
+		} else {
+			info.RawResponse += "\n--- " + apiRSAPath + " ---\n" + string(addrBody)
+			var rsaResp apiRSAResponse
+			if err := json.Unmarshal(addrBody, &rsaResp); err != nil {
+				log.Printf("utmclient: %s: разбор %s: %v", base, apiRSAPath, err)
+			} else {
+				for _, row := range rsaResp.Rows {
+					if row.PassOwnerID == resp.OwnerID && row.FactAddress != "" {
+						info.InstallAddress = row.FactAddress
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// findOrganization returns the entry matching ownerID, or the sole entry
+// if there's exactly one and none matches by ID (defensive: the field
+// name/exact matching semantics aren't confirmed beyond the one sample
+// seen, a single individual entrepreneur).
+func findOrganization(orgs []organizationEntry, ownerID string) *organizationEntry {
+	for i := range orgs {
+		if orgs[i].OwnerID == ownerID {
+			return &orgs[i]
+		}
+	}
+	if len(orgs) == 1 {
+		return &orgs[0]
 	}
 	return nil
 }

@@ -142,14 +142,26 @@ func TestFetchInfoPrimaryAPIPath(t *testing.T) {
 				"keyExpireDate":"2027-09-18 20:14:31 +0000","isKeyValid":"valid"},
 			"license":false}`)
 	})
-	mux.HandleFunc("/api/rsa", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"rows":[
-			{"pass_owner_id":"030001122298","Fact_Address":"обл. Пензенская,г.о. город Пенза,г. Пенза,ул. Бородина,д. 2"},
-			{"pass_owner_id":"999999999999","Fact_Address":"другой адрес"}
-		]}`)
+	// Real shape confirmed via browser DevTools against the same device.
+	mux.HandleFunc("/api/query/proxy/gateway/fsm/utm/organizations", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `[{"owner_ID":"030001122298","full_Name":"ИП СИДОРКИН АЛЕКСЕЙ ВЛАДИМИРОВИЧ",
+			"short_Name":"ИП СИДОРКИН АЛЕКСЕЙ ВЛАДИМИРОВИЧ","inn":"583709518258",
+			"country_Code":"643","region_Code":"58",
+			"dejure_Address":"обл. Пензенская,г.о. город Пенза,г. Пенза,ул. Бородина,д. 2",
+			"fact_Address":"обл. Пензенская,г.о. город Пенза,г. Пенза,ул. Бородина,д. 2",
+			"isLicense":"false"}]`)
 	})
-	// QueryPartner (ИНН/название) is deliberately left unimplemented here
-	// (404) — the primary path must still succeed on its own.
+	// /api/rsa is a fallback address source only consulted when
+	// /organizations doesn't provide one — it must NOT be hit here.
+	mux.HandleFunc("/api/rsa", func(w http.ResponseWriter, r *http.Request) {
+		t.Error("/api/rsa should not be queried when /organizations already gave an address")
+	})
+	// QueryPartner must never be invoked once /organizations already
+	// supplied ИНН — hitting it here would mean we're needlessly paying
+	// for the slow async round trip this whole rewrite exists to avoid.
+	mux.HandleFunc("/opt/in/QueryPartner", func(w http.ResponseWriter, r *http.Request) {
+		t.Error("QueryPartner should not be invoked when /organizations already gave ИНН")
+	})
 	mux.HandleFunc("/home", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
@@ -180,10 +192,11 @@ func TestFetchInfoPrimaryAPIPath(t *testing.T) {
 	if info.InstallAddress != "обл. Пензенская,г.о. город Пенза,г. Пенза,ул. Бородина,д. 2" {
 		t.Errorf("InstallAddress = %q", info.InstallAddress)
 	}
-	// INN/OrgName stay empty since QueryPartner 404s — that must not fail
-	// the overall poll, since FSRAR_ID + cert dates already succeeded.
-	if info.INN != "" {
-		t.Errorf("expected empty INN when QueryPartner is unavailable, got %q", info.INN)
+	if info.INN != "583709518258" {
+		t.Errorf("INN = %q, want 583709518258", info.INN)
+	}
+	if info.OrgName != "ИП СИДОРКИН АЛЕКСЕЙ ВЛАДИМИРОВИЧ" {
+		t.Errorf("OrgName = %q", info.OrgName)
 	}
 }
 
