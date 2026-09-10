@@ -108,11 +108,9 @@ func (s *Server) handleUTMCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := pollTimeout(r.Context())
-	defer cancel()
-	s.sched.PollOne(ctx, *u)
+	s.sched.PollOneAsync(*u)
 
-	redirectWithFlash(w, r, "/", "ok", "УТМ добавлен и опрошен")
+	redirectWithFlash(w, r, "/", "ok", "УТМ добавлен, опрос запущен — обновите страницу через 10–30 секунд")
 }
 
 func (s *Server) handleUTMEditForm(w http.ResponseWriter, r *http.Request) {
@@ -191,11 +189,9 @@ func (s *Server) handleUTMPollNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := pollTimeout(r.Context())
-	defer cancel()
-	s.sched.PollOne(ctx, *u)
+	s.sched.PollOneAsync(*u)
 
-	redirectWithFlash(w, r, "/", "ok", "Опрос выполнен")
+	redirectWithFlash(w, r, "/", "ok", "Опрос запущен — обновите страницу через 10–30 секунд")
 }
 
 type settingsData struct {

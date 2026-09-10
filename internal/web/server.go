@@ -4,7 +4,6 @@
 package web
 
 import (
-	"context"
 	"embed"
 	"html/template"
 	"log"
@@ -150,14 +149,6 @@ func flashFromRequest(r *http.Request) *flash {
 		return nil
 	}
 	return &flash{Kind: kind, Text: text}
-}
-
-// pollTimeout bounds a synchronous "poll now"/"add УТМ" HTTP request. The
-// underlying discovery flow submits a query to the central ЕГАИС server and
-// waits for its async reply (up to ~45s, see utmclient.replyWaitTimeout),
-// so this needs real headroom beyond a typical request.
-func pollTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, 60*time.Second)
 }
 
 func fmtDate(t *time.Time) string {

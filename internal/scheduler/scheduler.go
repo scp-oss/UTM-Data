@@ -22,6 +22,12 @@ type Scheduler struct {
 	lastRunDate map[string]string // slot name -> "2006-01-02" already triggered
 }
 
+// backgroundPollTimeout bounds a single async poll kicked off from the web
+// UI (see PollOneAsync). It must comfortably exceed utmclient's own
+// replyWaitTimeout (45s) so a slow but successful ЕГАИС round trip isn't
+// cut short.
+const backgroundPollTimeout = 90 * time.Second
+
 func New(st *store.Store, client *utmclient.Client) *Scheduler {
 	return &Scheduler{
 		store:       st,
@@ -92,6 +98,22 @@ func (s *Scheduler) RunCycle(ctx context.Context) {
 		s.PollOne(ctx, u)
 	}
 	s.CheckAndNotify(ctx)
+}
+
+// PollOneAsync starts PollOne in the background using a context detached
+// from the caller (in particular, from any inbound HTTP request). A single
+// poll can take up to ~45s — it waits on an async round trip through the
+// УТМ to the central ЕГАИС server — so tying it to a request's own context
+// would let a page refresh, a closed tab, or a proxy's idle timeout cancel
+// an otherwise-successful poll partway through (surfacing as a confusing
+// "context canceled" error). Progress is visible on the next page load via
+// the УТМ's last_poll_* fields; this call does not wait for it to finish.
+func (s *Scheduler) PollOneAsync(u models.UTM) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), backgroundPollTimeout)
+		defer cancel()
+		s.PollOne(ctx, u)
+	}()
 }
 
 // PollOne fetches fresh data for a single УТМ and persists the result. A
