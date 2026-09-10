@@ -12,8 +12,8 @@ import (
 )
 
 type indexData struct {
-	Flash *flash
-	UTMs  []models.UTM
+	base
+	UTMs []models.UTM
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -22,16 +22,64 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.render(w, "index", indexData{Flash: flashFromRequest(r), UTMs: utms})
+	s.render(w, "index", indexData{base: s.pageBase(r), UTMs: utms})
+}
+
+type loginData struct {
+	base
+	Next string
+}
+
+func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
+	if s.auth.Authenticated(r) {
+		http.Redirect(w, r, safeNext(r.URL.Query().Get("next")), http.StatusSeeOther)
+		return
+	}
+	s.render(w, "login", loginData{base: s.pageBase(r), Next: r.URL.Query().Get("next")})
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	password := r.FormValue("password")
+	next := safeNext(r.FormValue("next"))
+
+	if !s.auth.Check(password) {
+		target := "/login?flash_kind=error&flash_text=" + urlEscape("Неверный пароль")
+		if next != "/" {
+			target += "&next=" + urlEscape(next)
+		}
+		http.Redirect(w, r, target, http.StatusSeeOther)
+		return
+	}
+
+	s.auth.Login(w, r)
+	http.Redirect(w, r, next, http.StatusSeeOther)
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	s.auth.Logout(w, r)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// safeNext keeps redirect targets on this site only, refusing to bounce a
+// login through an attacker-supplied absolute or protocol-relative URL.
+func safeNext(next string) string {
+	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
+		return "/"
+	}
+	return next
 }
 
 type utmFormData struct {
-	Flash *flash
-	UTM   *models.UTM
+	base
+	UTM *models.UTM
 }
 
 func (s *Server) handleUTMNewForm(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "utm_form", utmFormData{Flash: flashFromRequest(r)})
+	s.render(w, "utm_form", utmFormData{base: s.pageBase(r)})
 }
 
 func (s *Server) handleUTMCreate(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +125,7 @@ func (s *Server) handleUTMEditForm(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	s.render(w, "utm_form", utmFormData{Flash: flashFromRequest(r), UTM: u})
+	s.render(w, "utm_form", utmFormData{base: s.pageBase(r), UTM: u})
 }
 
 func (s *Server) handleUTMUpdate(w http.ResponseWriter, r *http.Request) {
@@ -130,9 +178,10 @@ func (s *Server) handleUTMPollNow(w http.ResponseWriter, r *http.Request) {
 }
 
 type settingsData struct {
-	Flash    *flash
+	base
 	Settings models.Settings
 	Chats    []models.TelegramChat
+	UTMs     []models.UTM
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
@@ -146,7 +195,12 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.render(w, "settings", settingsData{Flash: flashFromRequest(r), Settings: settings, Chats: chats})
+	utms, err := s.store.ListUTMs()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.render(w, "settings", settingsData{base: s.pageBase(r), Settings: settings, Chats: chats, UTMs: utms})
 }
 
 func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
@@ -157,6 +211,10 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	t1 := strings.TrimSpace(r.FormValue("poll_time_1"))
 	t2 := strings.TrimSpace(r.FormValue("poll_time_2"))
 	token := strings.TrimSpace(r.FormValue("telegram_bot_token"))
+	mode := models.TelegramMode(r.FormValue("telegram_mode"))
+	proxyURL := strings.TrimSpace(r.FormValue("telegram_proxy_url"))
+	relayBase := strings.TrimSpace(r.FormValue("telegram_relay_base_url"))
+	relayAuth := strings.TrimSpace(r.FormValue("telegram_relay_auth_key"))
 
 	if !validPollTime(t1) {
 		redirectWithFlash(w, r, "/settings", "error", "Время опроса 1 указано неверно, используйте формат ЧЧ:ММ")
@@ -166,8 +224,21 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		redirectWithFlash(w, r, "/settings", "error", "Время опроса 2 указано неверно, используйте формат ЧЧ:ММ")
 		return
 	}
+	switch mode {
+	case models.TelegramModeDirect, models.TelegramModeSocks5, models.TelegramModeRelay:
+	default:
+		mode = models.TelegramModeDirect
+	}
 
-	err := s.store.UpdateSettings(models.Settings{PollTime1: t1, PollTime2: t2, TelegramBotToken: token})
+	err := s.store.UpdateSettings(models.Settings{
+		PollTime1:            t1,
+		PollTime2:            t2,
+		TelegramBotToken:     token,
+		TelegramMode:         mode,
+		TelegramProxyURL:     proxyURL,
+		TelegramRelayBaseURL: relayBase,
+		TelegramRelayAuthKey: relayAuth,
+	})
 	if err != nil {
 		redirectWithFlash(w, r, "/settings", "error", "Не удалось сохранить настройки: "+err.Error())
 		return
@@ -182,13 +253,24 @@ func (s *Server) handleTelegramChatAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	chatID := strings.TrimSpace(r.FormValue("chat_id"))
 	label := strings.TrimSpace(r.FormValue("chat_label"))
+	utmIDStr := strings.TrimSpace(r.FormValue("utm_id"))
 
 	if _, err := strconv.ParseInt(chatID, 10, 64); err != nil {
 		redirectWithFlash(w, r, "/settings", "error", "Chat ID должен быть числом")
 		return
 	}
 
-	if err := s.store.AddTelegramChat(chatID, label); err != nil {
+	var utmID *int64
+	if utmIDStr != "" {
+		id, err := strconv.ParseInt(utmIDStr, 10, 64)
+		if err != nil {
+			redirectWithFlash(w, r, "/settings", "error", "Некорректный УТМ")
+			return
+		}
+		utmID = &id
+	}
+
+	if err := s.store.AddTelegramChat(chatID, label, utmID); err != nil {
 		redirectWithFlash(w, r, "/settings", "error", "Не удалось добавить получателя: "+err.Error())
 		return
 	}
@@ -227,9 +309,9 @@ func (s *Server) handleTelegramTest(w http.ResponseWriter, r *http.Request) {
 	for i, c := range chats {
 		chatIDs[i] = c.ChatID
 	}
-	errs := notifier.SendToAll(settings.TelegramBotToken, chatIDs, "✅ UTM Дашборд: тестовое сообщение")
+	errs := notifier.SendToAll(settings, chatIDs, fmt.Sprintf("✅ UTM Дашборд: тестовое сообщение (режим: %s)", settings.TelegramMode))
 	if len(errs) > 0 {
-		redirectWithFlash(w, r, "/settings", "error", fmt.Sprintf("Ошибки отправки: %d из %d", len(errs), len(chatIDs)))
+		redirectWithFlash(w, r, "/settings", "error", fmt.Sprintf("Ошибки отправки: %d из %d (%v)", len(errs), len(chatIDs), errs[0]))
 		return
 	}
 	redirectWithFlash(w, r, "/settings", "ok", "Тестовое сообщение отправлено")

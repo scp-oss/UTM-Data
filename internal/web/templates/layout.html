@@ -52,7 +52,7 @@
   form.inline { display: inline; }
   .actions { display: flex; gap: 6px; flex-wrap: wrap; }
   label { display: block; margin: 14px 0 6px; font-weight: 600; }
-  input[type=text], input[type=number] { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 14px; }
+  input[type=text], input[type=number], input[type=password], select { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 14px; }
   .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
   .badge.ok { color: var(--ok); background: var(--ok-bg); }
@@ -74,10 +74,18 @@
   <h1>UTM Дашборд</h1>
   <nav>
     <a href="/">Список УТМ</a>
-    <a href="/settings">Настройки</a>
+    {{if .Authenticated}}<a href="/settings">Настройки</a>{{end}}
+    {{if .AuthConfigured}}
+      {{if .Authenticated}}
+        <form class="inline" method="post" action="/logout"><button class="btn secondary" type="submit">Выйти</button></form>
+      {{else}}
+        <a href="/login">Войти</a>
+      {{end}}
+    {{end}}
   </nav>
 </header>
 <main>
+  {{if not .AuthConfigured}}<div class="flash error">⚠️ Пароль администратора не задан (переменная ADMIN_PASSWORD) — управление УТМ и настройки открыты без авторизации.</div>{{end}}
   {{with .Flash}}<div class="flash {{.Kind}}">{{.Text}}</div>{{end}}
   {{template "content" .}}
 </main>

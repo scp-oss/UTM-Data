@@ -19,6 +19,12 @@ type Config struct {
 	DBPath string
 	// PollHTTPTimeout bounds a single request to a УТМ's HTTP API.
 	PollHTTPTimeout time.Duration
+	// AdminPassword, when set, gates adding/editing/deleting УТМ and the
+	// settings page behind a login form. Deliberately read only from the
+	// environment (never stored in the repo or the database) so it never
+	// ends up committed to source control. Empty means the panel is left
+	// open — the UI shows a persistent warning in that case.
+	AdminPassword string
 }
 
 func Load() Config {
@@ -26,6 +32,7 @@ func Load() Config {
 		HTTPAddr:        getEnv("HTTP_ADDR", ":8088"),
 		DBPath:          getEnv("DB_PATH", "./data/utm-dashboard.db"),
 		PollHTTPTimeout: 10 * time.Second,
+		AdminPassword:   os.Getenv("ADMIN_PASSWORD"),
 	}
 }
 

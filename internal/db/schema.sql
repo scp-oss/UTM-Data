@@ -20,10 +20,14 @@ CREATE TABLE IF NOT EXISTS utms (
 );
 
 CREATE TABLE IF NOT EXISTS settings (
-    id                   INTEGER PRIMARY KEY CHECK (id = 1),
-    poll_time_1          TEXT NOT NULL DEFAULT '09:00',
-    poll_time_2          TEXT NOT NULL DEFAULT '',
-    telegram_bot_token   TEXT NOT NULL DEFAULT ''
+    id                        INTEGER PRIMARY KEY CHECK (id = 1),
+    poll_time_1               TEXT NOT NULL DEFAULT '09:00',
+    poll_time_2               TEXT NOT NULL DEFAULT '',
+    telegram_bot_token        TEXT NOT NULL DEFAULT '',
+    telegram_mode             TEXT NOT NULL DEFAULT 'direct',
+    telegram_proxy_url        TEXT NOT NULL DEFAULT '',
+    telegram_relay_base_url   TEXT NOT NULL DEFAULT '',
+    telegram_relay_auth_key   TEXT NOT NULL DEFAULT ''
 );
 
 INSERT OR IGNORE INTO settings (id, poll_time_1, poll_time_2, telegram_bot_token)
@@ -32,7 +36,8 @@ VALUES (1, '09:00', '', '');
 CREATE TABLE IF NOT EXISTS telegram_chats (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id  TEXT NOT NULL UNIQUE,
-    label    TEXT NOT NULL DEFAULT ''
+    label    TEXT NOT NULL DEFAULT '',
+    utm_id   INTEGER REFERENCES utms(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS notifications_sent (

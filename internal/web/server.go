@@ -9,8 +9,10 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"net/url"
 	"time"
 
+	"github.com/scp-oss/utm-data/internal/auth"
 	"github.com/scp-oss/utm-data/internal/scheduler"
 	"github.com/scp-oss/utm-data/internal/store"
 )
@@ -21,6 +23,7 @@ var templateFS embed.FS
 type Server struct {
 	store *store.Store
 	sched *scheduler.Scheduler
+	auth  *auth.Manager
 	pages map[string]*template.Template
 	mux   *http.ServeMux
 }
@@ -33,9 +36,10 @@ var pageFiles = map[string]string{
 	"index":    "templates/index.html",
 	"utm_form": "templates/utm_form.html",
 	"settings": "templates/settings.html",
+	"login":    "templates/login.html",
 }
 
-func New(st *store.Store, sched *scheduler.Scheduler) *Server {
+func New(st *store.Store, sched *scheduler.Scheduler, authMgr *auth.Manager) *Server {
 	funcs := template.FuncMap{
 		"fmtDate":     fmtDate,
 		"fmtDateTime": fmtDateTime,
@@ -49,7 +53,7 @@ func New(st *store.Store, sched *scheduler.Scheduler) *Server {
 		)
 	}
 
-	s := &Server{store: st, sched: sched, pages: pages, mux: http.NewServeMux()}
+	s := &Server{store: st, sched: sched, auth: authMgr, pages: pages, mux: http.NewServeMux()}
 	s.routes()
 	return s
 }
@@ -61,18 +65,36 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /{$}", s.handleIndex)
 
-	s.mux.HandleFunc("GET /utm/new", s.handleUTMNewForm)
-	s.mux.HandleFunc("POST /utm/new", s.handleUTMCreate)
-	s.mux.HandleFunc("GET /utm/{id}/edit", s.handleUTMEditForm)
-	s.mux.HandleFunc("POST /utm/{id}/edit", s.handleUTMUpdate)
-	s.mux.HandleFunc("POST /utm/{id}/delete", s.handleUTMDelete)
-	s.mux.HandleFunc("POST /utm/{id}/poll", s.handleUTMPollNow)
+	s.mux.HandleFunc("GET /login", s.handleLoginForm)
+	s.mux.HandleFunc("POST /login", s.handleLogin)
+	s.mux.HandleFunc("POST /logout", s.handleLogout)
 
-	s.mux.HandleFunc("GET /settings", s.handleSettings)
-	s.mux.HandleFunc("POST /settings", s.handleSettingsSave)
-	s.mux.HandleFunc("POST /settings/telegram/add", s.handleTelegramChatAdd)
-	s.mux.HandleFunc("POST /settings/telegram/{id}/delete", s.handleTelegramChatDelete)
-	s.mux.HandleFunc("POST /settings/telegram/test", s.handleTelegramTest)
+	s.mux.HandleFunc("GET /utm/new", s.requireAuth(s.handleUTMNewForm))
+	s.mux.HandleFunc("POST /utm/new", s.requireAuth(s.handleUTMCreate))
+	s.mux.HandleFunc("GET /utm/{id}/edit", s.requireAuth(s.handleUTMEditForm))
+	s.mux.HandleFunc("POST /utm/{id}/edit", s.requireAuth(s.handleUTMUpdate))
+	s.mux.HandleFunc("POST /utm/{id}/delete", s.requireAuth(s.handleUTMDelete))
+	s.mux.HandleFunc("POST /utm/{id}/poll", s.requireAuth(s.handleUTMPollNow))
+
+	s.mux.HandleFunc("GET /settings", s.requireAuth(s.handleSettings))
+	s.mux.HandleFunc("POST /settings", s.requireAuth(s.handleSettingsSave))
+	s.mux.HandleFunc("POST /settings/telegram/add", s.requireAuth(s.handleTelegramChatAdd))
+	s.mux.HandleFunc("POST /settings/telegram/{id}/delete", s.requireAuth(s.handleTelegramChatDelete))
+	s.mux.HandleFunc("POST /settings/telegram/test", s.requireAuth(s.handleTelegramTest))
+}
+
+// requireAuth redirects to the login page when no valid admin session is
+// present. When no admin password is configured at all, auth.Manager treats
+// every request as authenticated and this is a no-op.
+func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.auth.Authenticated(r) {
+			target := "/login?next=" + url.QueryEscape(r.URL.RequestURI())
+			http.Redirect(w, r, target, http.StatusSeeOther)
+			return
+		}
+		next(w, r)
+	}
 }
 
 // flash is a one-off message rendered at the top of the page after a
@@ -81,6 +103,22 @@ func (s *Server) routes() {
 type flash struct {
 	Kind string
 	Text string
+}
+
+// base is embedded in every page's view model so the shared layout can
+// show/hide admin links and the "no password configured" warning.
+type base struct {
+	Flash          *flash
+	Authenticated  bool
+	AuthConfigured bool
+}
+
+func (s *Server) pageBase(r *http.Request) base {
+	return base{
+		Flash:          flashFromRequest(r),
+		Authenticated:  s.auth.Authenticated(r),
+		AuthConfigured: s.auth.Configured(),
+	}
 }
 
 func (s *Server) render(w http.ResponseWriter, page string, data any) {
@@ -96,8 +134,12 @@ func (s *Server) render(w http.ResponseWriter, page string, data any) {
 }
 
 func redirectWithFlash(w http.ResponseWriter, r *http.Request, target, kind, text string) {
-	q := "?flash_kind=" + template.URLQueryEscaper(kind) + "&flash_text=" + template.URLQueryEscaper(text)
+	q := "?flash_kind=" + urlEscape(kind) + "&flash_text=" + urlEscape(text)
 	http.Redirect(w, r, target+q, http.StatusSeeOther)
+}
+
+func urlEscape(s string) string {
+	return template.URLQueryEscaper(s)
 }
 
 func flashFromRequest(r *http.Request) *flash {

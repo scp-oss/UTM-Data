@@ -157,39 +157,72 @@ func boolToInt(b bool) int {
 
 func (s *Store) GetSettings() (models.Settings, error) {
 	var st models.Settings
-	err := s.db.QueryRow(`SELECT poll_time_1, poll_time_2, telegram_bot_token FROM settings WHERE id = 1`).
-		Scan(&st.PollTime1, &st.PollTime2, &st.TelegramBotToken)
+	var mode string
+	err := s.db.QueryRow(`SELECT poll_time_1, poll_time_2, telegram_bot_token,
+		telegram_mode, telegram_proxy_url, telegram_relay_base_url, telegram_relay_auth_key
+		FROM settings WHERE id = 1`).
+		Scan(&st.PollTime1, &st.PollTime2, &st.TelegramBotToken,
+			&mode, &st.TelegramProxyURL, &st.TelegramRelayBaseURL, &st.TelegramRelayAuthKey)
+	st.TelegramMode = models.TelegramMode(mode)
+	if st.TelegramMode == "" {
+		st.TelegramMode = models.TelegramModeDirect
+	}
 	return st, err
 }
 
 func (s *Store) UpdateSettings(st models.Settings) error {
-	_, err := s.db.Exec(`UPDATE settings SET poll_time_1 = ?, poll_time_2 = ?, telegram_bot_token = ? WHERE id = 1`,
-		st.PollTime1, st.PollTime2, st.TelegramBotToken)
+	_, err := s.db.Exec(`UPDATE settings SET poll_time_1 = ?, poll_time_2 = ?, telegram_bot_token = ?,
+		telegram_mode = ?, telegram_proxy_url = ?, telegram_relay_base_url = ?, telegram_relay_auth_key = ?
+		WHERE id = 1`,
+		st.PollTime1, st.PollTime2, st.TelegramBotToken,
+		string(st.TelegramMode), st.TelegramProxyURL, st.TelegramRelayBaseURL, st.TelegramRelayAuthKey)
 	return err
 }
 
 // ---- Telegram chats ----
 
+const telegramChatSelect = `SELECT tc.id, tc.chat_id, tc.label, tc.utm_id, COALESCE(u.label, u.org_name, u.ip_address, '')
+	FROM telegram_chats tc LEFT JOIN utms u ON u.id = tc.utm_id`
+
 func (s *Store) ListTelegramChats() ([]models.TelegramChat, error) {
-	rows, err := s.db.Query(`SELECT id, chat_id, label FROM telegram_chats ORDER BY id ASC`)
+	rows, err := s.db.Query(telegramChatSelect + ` ORDER BY tc.id ASC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanTelegramChats(rows)
+}
 
+// ListTelegramChatsForUTM returns the recipients that should be notified
+// about a given УТМ: those scoped to it plus the ones scoped to no УТМ at
+// all (utm_id IS NULL), which act as "receives everything" admins.
+func (s *Store) ListTelegramChatsForUTM(utmID int64) ([]models.TelegramChat, error) {
+	rows, err := s.db.Query(telegramChatSelect+` WHERE tc.utm_id IS NULL OR tc.utm_id = ? ORDER BY tc.id ASC`, utmID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTelegramChats(rows)
+}
+
+func scanTelegramChats(rows *sql.Rows) ([]models.TelegramChat, error) {
 	var out []models.TelegramChat
 	for rows.Next() {
 		var c models.TelegramChat
-		if err := rows.Scan(&c.ID, &c.ChatID, &c.Label); err != nil {
+		var utmID sql.NullInt64
+		if err := rows.Scan(&c.ID, &c.ChatID, &c.Label, &utmID, &c.UTMLabel); err != nil {
 			return nil, err
+		}
+		if utmID.Valid {
+			c.UTMID = &utmID.Int64
 		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
 }
 
-func (s *Store) AddTelegramChat(chatID, label string) error {
-	_, err := s.db.Exec(`INSERT OR IGNORE INTO telegram_chats (chat_id, label) VALUES (?, ?)`, chatID, label)
+func (s *Store) AddTelegramChat(chatID, label string, utmID *int64) error {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO telegram_chats (chat_id, label, utm_id) VALUES (?, ?, ?)`, chatID, label, utmID)
 	return err
 }
 

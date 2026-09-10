@@ -1,8 +1,9 @@
 {{define "content"}}
+{{$root := .}}
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
     <strong>Мониторинг УТМ</strong>
-    <a class="btn" href="/utm/new">+ Добавить УТМ</a>
+    {{if .Authenticated}}<a class="btn" href="/utm/new">+ Добавить УТМ</a>{{else}}<a class="btn secondary" href="/login">Войти для управления</a>{{end}}
   </div>
 
   {{if not .UTMs}}
@@ -17,7 +18,7 @@
         <th>Сертификат ЕГАИС</th>
         <th>ГОСТ-сертификат</th>
         <th>Опрос</th>
-        <th></th>
+        {{if .Authenticated}}<th></th>{{end}}
       </tr>
     </thead>
     <tbody>
@@ -42,6 +43,7 @@
           {{end}}
           {{if .LastPollError}}<div class="raw">{{.LastPollError}}</div>{{end}}
         </td>
+        {{if $root.Authenticated}}
         <td>
           <div class="actions">
             <form class="inline" method="post" action="/utm/{{.ID}}/poll"><button class="btn secondary" type="submit">Опросить</button></form>
@@ -49,6 +51,7 @@
             <form class="inline" method="post" action="/utm/{{.ID}}/delete" onsubmit="return confirm('Удалить этот УТМ?');"><button class="btn danger" type="submit">Удалить</button></form>
           </div>
         </td>
+        {{end}}
       </tr>
       {{end}}
     </tbody>

@@ -124,7 +124,9 @@ func (s *Scheduler) PollOne(ctx context.Context, u models.UTM) {
 
 // CheckAndNotify scans all УТМ certificates and sends Telegram alerts for
 // any (certificate, threshold) combination that has become due and was not
-// already sent for the certificate's current expiry date.
+// already sent for the certificate's current expiry date. Each УТМ notifies
+// only its own scoped recipients plus the unscoped ("all УТМ") ones, so
+// different clients' contacts never see each other's alerts.
 func (s *Scheduler) CheckAndNotify(ctx context.Context) {
 	settings, err := s.store.GetSettings()
 	if err != nil {
@@ -135,19 +137,6 @@ func (s *Scheduler) CheckAndNotify(ctx context.Context) {
 		return
 	}
 
-	chats, err := s.store.ListTelegramChats()
-	if err != nil {
-		log.Printf("notify: list chats: %v", err)
-		return
-	}
-	if len(chats) == 0 {
-		return
-	}
-	chatIDs := make([]string, len(chats))
-	for i, c := range chats {
-		chatIDs[i] = c.ChatID
-	}
-
 	utms, err := s.store.ListUTMs()
 	if err != nil {
 		log.Printf("notify: list utms: %v", err)
@@ -156,12 +145,25 @@ func (s *Scheduler) CheckAndNotify(ctx context.Context) {
 
 	now := time.Now()
 	for _, u := range utms {
-		s.checkCert(now, settings.TelegramBotToken, chatIDs, u, models.CertEgais, u.EgaisCertTo)
-		s.checkCert(now, settings.TelegramBotToken, chatIDs, u, models.CertGost, u.GostCertTo)
+		chats, err := s.store.ListTelegramChatsForUTM(u.ID)
+		if err != nil {
+			log.Printf("notify: list chats for утм #%d: %v", u.ID, err)
+			continue
+		}
+		if len(chats) == 0 {
+			continue
+		}
+		chatIDs := make([]string, len(chats))
+		for i, c := range chats {
+			chatIDs[i] = c.ChatID
+		}
+
+		s.checkCert(now, settings, chatIDs, u, models.CertEgais, u.EgaisCertTo)
+		s.checkCert(now, settings, chatIDs, u, models.CertGost, u.GostCertTo)
 	}
 }
 
-func (s *Scheduler) checkCert(now time.Time, token string, chatIDs []string, u models.UTM, certType models.CertType, expiry *time.Time) {
+func (s *Scheduler) checkCert(now time.Time, settings models.Settings, chatIDs []string, u models.UTM, certType models.CertType, expiry *time.Time) {
 	if expiry == nil {
 		return
 	}
@@ -188,7 +190,7 @@ func (s *Scheduler) checkCert(now time.Time, token string, chatIDs []string, u m
 		}
 
 		text := notificationText(u, certType, *expiry, daysLeft)
-		for _, sendErr := range notifier.SendToAll(token, chatIDs, text) {
+		for _, sendErr := range notifier.SendToAll(settings, chatIDs, text) {
 			log.Printf("notify: %v", sendErr)
 		}
 
@@ -198,6 +200,10 @@ func (s *Scheduler) checkCert(now time.Time, token string, chatIDs []string, u m
 	}
 }
 
+// notificationText leads with whichever name most clearly identifies the
+// client to a human reading several alerts in a row: the operator-chosen
+// label first (it's what they intentionally called this site), falling
+// back to the organization name fetched from the УТМ, then the IP.
 func notificationText(u models.UTM, certType models.CertType, expiry time.Time, daysLeft int) string {
 	name := u.Label
 	if name == "" {
@@ -206,8 +212,14 @@ func notificationText(u models.UTM, certType models.CertType, expiry time.Time, 
 	if name == "" {
 		name = u.IPAddress
 	}
+
+	who := name
+	if u.OrgName != "" && u.OrgName != name {
+		who += " (" + u.OrgName + ")"
+	}
+
 	return fmt.Sprintf(
-		"⚠️ УТМ «%s» (%s): %s истекает %s (осталось %d дн.)",
-		name, u.IPAddress, certType.Label(), expiry.Format("02.01.2006"), daysLeft,
+		"⚠️ %s\nУТМ %s: %s истекает %s (осталось %d дн.)",
+		who, u.IPAddress, certType.Label(), expiry.Format("02.01.2006"), daysLeft,
 	)
 }

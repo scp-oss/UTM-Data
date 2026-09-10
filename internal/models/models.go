@@ -24,18 +24,41 @@ type UTM struct {
 	CreatedAt       time.Time
 }
 
+// TelegramMode selects how outgoing Telegram API calls are routed. All three
+// exist because api.telegram.org is blocked on some Russian networks: a
+// direct connection fails there, so the bot also needs to work through a
+// SOCKS5 proxy or through a third-party HTTP relay that mirrors the Bot API
+// under a different domain (and typically requires its own "auth" key).
+type TelegramMode string
+
+const (
+	TelegramModeDirect TelegramMode = "direct"
+	TelegramModeSocks5 TelegramMode = "socks5"
+	TelegramModeRelay  TelegramMode = "relay"
+)
+
 // Settings holds the single global configuration row.
 type Settings struct {
 	PollTime1        string // "HH:MM", empty disables this slot
 	PollTime2        string // "HH:MM", empty disables this slot
 	TelegramBotToken string
+
+	TelegramMode         TelegramMode
+	TelegramProxyURL     string // socks5://[user:pass@]host:port, mode=socks5
+	TelegramRelayBaseURL string // e.g. https://red-domage.cc.cd, mode=relay
+	TelegramRelayAuthKey string // relay's own "auth" query parameter, mode=relay
 }
 
-// TelegramChat is a chat/group that receives expiry notifications.
+// TelegramChat is a chat/group that receives expiry notifications. UTMID
+// scopes the recipient to a single client's УТМ (so different customers'
+// contacts don't see each other's alerts); nil means "all УТМ" and is meant
+// for an internal/admin recipient.
 type TelegramChat struct {
-	ID     int64
-	ChatID string
-	Label  string
+	ID       int64
+	ChatID   string
+	Label    string
+	UTMID    *int64
+	UTMLabel string // joined for display only, empty when UTMID is nil
 }
 
 // CertType identifies which certificate a notification/threshold refers to.

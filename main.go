@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/scp-oss/utm-data/internal/auth"
 	"github.com/scp-oss/utm-data/internal/config"
 	"github.com/scp-oss/utm-data/internal/db"
 	"github.com/scp-oss/utm-data/internal/scheduler"
@@ -21,6 +22,10 @@ import (
 func main() {
 	cfg := config.Load()
 
+	if cfg.AdminPassword == "" {
+		log.Print("ВНИМАНИЕ: переменная ADMIN_PASSWORD не задана — управление УТМ и настройки открыты без пароля")
+	}
+
 	sqlDB, err := db.Open(cfg.DBPath)
 	if err != nil {
 		log.Fatalf("open database: %v", err)
@@ -30,7 +35,8 @@ func main() {
 	st := store.New(sqlDB)
 	client := utmclient.New(cfg.PollHTTPTimeout)
 	sched := scheduler.New(st, client)
-	server := web.New(st, sched)
+	authMgr := auth.New(cfg.AdminPassword)
+	server := web.New(st, sched, authMgr)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
