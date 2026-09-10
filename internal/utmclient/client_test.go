@@ -14,11 +14,12 @@ import (
 )
 
 // TestFetchInfoPrimaryAPIPath exercises the confirmed-working fast path
-// (GET /api/info/list + GET /api/query/proxy/gateway/fsm/utm/organizations)
-// that a real УТМ was seen answering synchronously and locally. This is
-// expected to be the common case in practice; fixture values below are
-// fictitious (structurally matching the confirmed real shape, but not real
-// organization data).
+// (GET /api/info/list + GET /api/rsa) that a real УТМ was seen answering
+// synchronously and locally. This is expected to be the common case in
+// practice; fixture values below are fictitious (structurally matching the
+// confirmed real shape, but not real organization data). The fixture
+// includes several rows for the same owner (as a real device does, one per
+// licensed address) to verify only the matching row is used.
 func TestFetchInfoPrimaryAPIPath(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
@@ -36,18 +37,15 @@ func TestFetchInfoPrimaryAPIPath(t *testing.T) {
 				"keyExpireDate":"2031-02-01 00:00:00 +0000","isKeyValid":"valid"},
 			"license":false}`)
 	})
-	mux.HandleFunc("/api/query/proxy/gateway/fsm/utm/organizations", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `[{"owner_ID":"030000000001","full_Name":"ИП ИВАНОВ ИВАН ИВАНОВИЧ",
-			"short_Name":"ИП ИВАНОВ ИВАН ИВАНОВИЧ","inn":"1234567890",
-			"country_Code":"643","region_Code":"77",
-			"dejure_Address":"г. Москва, ул. Примерная, д. 1",
-			"fact_Address":"г. Москва, ул. Примерная, д. 1",
-			"isLicense":"false"}]`)
-	})
-	// /api/rsa is a fallback address source only consulted when
-	// /organizations doesn't provide one — it must NOT be hit here.
 	mux.HandleFunc("/api/rsa", func(w http.ResponseWriter, r *http.Request) {
-		t.Error("/api/rsa should not be queried when /organizations already gave an address")
+		fmt.Fprint(w, `{"rows":[
+			{"pass_owner_id":"030000000002","Owner_ID":"030000000002","Full_Name":"ИП ПЕТРОВ ПЁТР ПЕТРОВИЧ",
+				"Short_Name":"ИП ПЕТРОВ ПЁТР ПЕТРОВИЧ","INN":"9876543210","KPP":"",
+				"Dejure_Address":"г. Тверь, ул. Другая, д. 5","Fact_Address":"г. Тверь, ул. Другая, д. 5"},
+			{"pass_owner_id":"030000000001","Owner_ID":"030000000001","Full_Name":"ИП ИВАНОВ ИВАН ИВАНОВИЧ",
+				"Short_Name":"ИП ИВАНОВ ИВАН ИВАНОВИЧ","INN":"1234567890","KPP":"",
+				"Dejure_Address":"г. Москва, ул. Примерная, д. 1","Fact_Address":"г. Москва, ул. Примерная, д. 1"}
+		]}`)
 	})
 	host, port := splitTestServerURL(t, srv.URL)
 

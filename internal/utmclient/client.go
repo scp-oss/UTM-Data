@@ -19,21 +19,27 @@
 //	  "gost": {"startDate": "...", "expireDate": "..."}}
 //	  ownerId is the FSRAR_ID; rsa/gost carry both dates of each
 //	  certificate's validity period.
-//	GET /api/query/proxy/gateway/fsm/utm/organizations -> [{"owner_ID": "...",
-//	  "full_Name": "...", "short_Name": "...", "inn": "...",
-//	  "dejure_Address": "...", "fact_Address": "..."}]
-//	  a one-entry (per owner_ID) array with the organization's own ИНН,
-//	  name and address — no "kpp" field was present in the one confirmed
-//	  sample, an individual entrepreneur (ИП), which has no KPP by law;
-//	  a legal entity's response may include one.
-//	GET /api/rsa -> {"rows": [{"pass_owner_id": "...", "Fact_Address": "..."}, ...]}
-//	  filtering rows by pass_owner_id == ownerId gives the same
-//	  installation address as a fallback, in case /organizations doesn't.
+//	GET /api/rsa -> {"rows": [{"pass_owner_id": "...", "Owner_ID": "...",
+//	  "Full_Name": "...", "Short_Name": "...", "INN": "...", "KPP": "...",
+//	  "Dejure_Address": "...", "Fact_Address": "..."}, ...]}
+//	  one row per licensed address; every row for a given owner repeats
+//	  the same organization fields (ИНН/КПП/name), only the address
+//	  differs. Filtering rows by pass_owner_id == ownerId gives the
+//	  organization AND its installation address from a single row — only
+//	  that matched row is kept, not the full array, to avoid storing the
+//	  same organization data dozens of times over in RawResponse.
+//
+// An earlier revision also queried
+// /api/query/proxy/gateway/fsm/utm/organizations (found via browser
+// DevTools) for the same organization fields. It turned out to fail
+// silently on some devices/polls (proxied through a live backend rather
+// than answered locally, unlike the two endpoints above) while /api/rsa
+// already carries everything it did, so it was dropped entirely.
 //
 // This is undocumented in ФСРАР's public "Технические требования УТМ"
 // PDF (which only covers the document-exchange protocol), so field names
 // beyond what's been confirmed above are unverified on other УТМ
-// versions/builds — every raw response is kept (Info.RawResponse)
+// versions/builds — the matched row is kept (Info.RawResponse)
 // specifically so the mapping can be extended if needed.
 //
 // One lightweight, documented fallback remains for when /api/info/list
@@ -43,9 +49,9 @@
 // and it cannot turn an otherwise-successful poll into a failure; only a
 // total inability to determine even the FSRAR_ID does that.
 //
-// A legal entity's ИНН/name that /organizations doesn't provide, or
-// either certificate's "from" date should /api/info/list ever lack one on
-// some build, are left for manual entry on the "Изменить УТМ" page (see
+// A legal entity's ИНН/name that /api/rsa doesn't provide, or either
+// certificate's "from" date should /api/info/list ever lack one on some
+// build, are left for manual entry on the "Изменить УТМ" page (see
 // internal/store), the same way 1С treats ИНН/name it couldn't look up
 // automatically. Every field left zero/nil in the returned Info means
 // "this poll didn't determine it"; callers keep whatever value they
@@ -69,10 +75,9 @@ import (
 const DefaultPort = 8080
 
 const (
-	apiInfoListPath      = "/api/info/list"
-	apiOrganizationsPath = "/api/query/proxy/gateway/fsm/utm/organizations"
-	apiRSAPath           = "/api/rsa"
-	diagnosisPath        = "/diagnosis"
+	apiInfoListPath = "/api/info/list"
+	apiRSAPath      = "/api/rsa"
+	diagnosisPath   = "/diagnosis"
 )
 
 type Client struct {
@@ -126,7 +131,7 @@ func (c *Client) FetchInfo(ctx context.Context, ip string, port int) (*Info, err
 	}
 
 	if info.INN == "" {
-		log.Printf("utmclient: %s: %s не дал ИНН — заполните организацию вручную на странице «Изменить УТМ»", base, apiOrganizationsPath)
+		log.Printf("utmclient: %s: %s не дал ИНН — заполните организацию вручную на странице «Изменить УТМ»", base, apiRSAPath)
 	}
 
 	return info, nil
@@ -160,33 +165,29 @@ type apiInfoListResponse struct {
 	} `json:"gost"`
 }
 
-type apiRSAResponse struct {
-	Rows []struct {
-		PassOwnerID string `json:"pass_owner_id"`
-		FactAddress string `json:"Fact_Address"`
-	} `json:"rows"`
+// apiRSARow is one row of GET /api/rsa, confirmed against a real device.
+// Every row for the same owner repeats the same organization fields
+// (ИНН/КПП/name) and differs only in address — a УТМ can be licensed for
+// several addresses — so only the row matching the polled ownerId is kept.
+type apiRSARow struct {
+	PassOwnerID   string `json:"pass_owner_id"`
+	OwnerID       string `json:"Owner_ID"`
+	FullName      string `json:"Full_Name"`
+	ShortName     string `json:"Short_Name"`
+	INN           string `json:"INN"`
+	KPP           string `json:"KPP"` // empty for individual entrepreneurs (ИП), which have no KPP by law
+	DejureAddress string `json:"Dejure_Address"`
+	FactAddress   string `json:"Fact_Address"`
 }
 
-// organizationEntry mirrors one row of
-// GET /api/query/proxy/gateway/fsm/utm/organizations, confirmed against a
-// real device via its browser DevTools Network tab. Unlike QueryPartner,
-// this answers instantly with no round trip to the central ЕГАИС server —
-// a УТМ only ever serves the one organization it's licensed for, so this
-// is just its own already-known identity, not a live lookup.
-type organizationEntry struct {
-	OwnerID       string `json:"owner_ID"`
-	FullName      string `json:"full_Name"`
-	ShortName     string `json:"short_Name"`
-	INN           string `json:"inn"`
-	KPP           string `json:"kpp"` // absent for individual entrepreneurs (ИП); unconfirmed for legal entities
-	DejureAddress string `json:"dejure_Address"`
-	FactAddress   string `json:"fact_Address"`
+type apiRSAResponse struct {
+	Rows []apiRSARow `json:"rows"`
 }
 
 // fetchAPIInfo is the primary discovery path. It sets whatever it can
 // directly on info and returns an error only when /api/info/list itself
-// couldn't be read/parsed or didn't carry an ownerId — failures of the
-// secondary /organizations and /api/rsa calls are logged but not fatal.
+// couldn't be read/parsed or didn't carry an ownerId — a failure of the
+// secondary /api/rsa call is logged but not fatal.
 func (c *Client) fetchAPIInfo(ctx context.Context, base string, info *Info) error {
 	body, err := c.get(ctx, base+apiInfoListPath)
 	if len(body) > 0 {
@@ -211,56 +212,43 @@ func (c *Client) fetchAPIInfo(ctx context.Context, base string, info *Info) erro
 	info.GostCertTo = parseCertTime(resp.Gost.ExpireDate)
 	log.Printf("utmclient: %s: %s ok: ownerId=%s версия=%s", base, apiInfoListPath, resp.OwnerID, resp.Version)
 
-	if orgBody, err := c.get(ctx, base+apiOrganizationsPath); err != nil {
-		log.Printf("utmclient: %s: %s (ИНН/название, необязательно) failed: %v", base, apiOrganizationsPath, err)
+	if rsaBody, err := c.get(ctx, base+apiRSAPath); err != nil {
+		log.Printf("utmclient: %s: %s (организация/адрес, необязательно) failed: %v", base, apiRSAPath, err)
 	} else {
-		info.RawResponse += "\n--- " + apiOrganizationsPath + " ---\n" + string(orgBody)
-		var orgs []organizationEntry
-		if err := json.Unmarshal(orgBody, &orgs); err != nil {
-			log.Printf("utmclient: %s: разбор %s: %v", base, apiOrganizationsPath, err)
-		} else if org := findOrganization(orgs, resp.OwnerID); org != nil {
-			info.INN = org.INN
-			info.KPP = org.KPP
-			info.OrgName = firstNonEmpty(org.ShortName, org.FullName)
-			info.InstallAddress = firstNonEmpty(org.FactAddress, org.DejureAddress)
-			log.Printf("utmclient: %s: %s ok: ИНН=%s", base, apiOrganizationsPath, org.INN)
-		}
-	}
-
-	if info.InstallAddress == "" {
-		if addrBody, err := c.get(ctx, base+apiRSAPath); err != nil {
-			log.Printf("utmclient: %s: %s (адрес установки, необязательно) failed: %v", base, apiRSAPath, err)
-		} else {
-			info.RawResponse += "\n--- " + apiRSAPath + " ---\n" + string(addrBody)
-			var rsaResp apiRSAResponse
-			if err := json.Unmarshal(addrBody, &rsaResp); err != nil {
-				log.Printf("utmclient: %s: разбор %s: %v", base, apiRSAPath, err)
-			} else {
-				for _, row := range rsaResp.Rows {
-					if row.PassOwnerID == resp.OwnerID && row.FactAddress != "" {
-						info.InstallAddress = row.FactAddress
-						break
-					}
-				}
+		var rsaResp apiRSAResponse
+		if err := json.Unmarshal(rsaBody, &rsaResp); err != nil {
+			log.Printf("utmclient: %s: разбор %s: %v", base, apiRSAPath, err)
+		} else if row := findRSARow(rsaResp.Rows, resp.OwnerID); row != nil {
+			info.INN = row.INN
+			info.KPP = row.KPP
+			info.OrgName = firstNonEmpty(row.ShortName, row.FullName)
+			info.InstallAddress = firstNonEmpty(row.FactAddress, row.DejureAddress)
+			// Only the matched row is kept, not the full (often 40+ row)
+			// array — every row repeats the same organization fields, so
+			// storing them all would bloat last_raw_response for nothing.
+			if rowJSON, err := json.Marshal(row); err == nil {
+				info.RawResponse += "\n--- " + apiRSAPath + " (совпавшая строка) ---\n" + string(rowJSON)
 			}
+			log.Printf("utmclient: %s: %s ok: ИНН=%s", base, apiRSAPath, row.INN)
+		} else {
+			log.Printf("utmclient: %s: %s не содержит строки с pass_owner_id=%s", base, apiRSAPath, resp.OwnerID)
 		}
 	}
 
 	return nil
 }
 
-// findOrganization returns the entry matching ownerID, or the sole entry
-// if there's exactly one and none matches by ID (defensive: the field
-// name/exact matching semantics aren't confirmed beyond the one sample
-// seen, a single individual entrepreneur).
-func findOrganization(orgs []organizationEntry, ownerID string) *organizationEntry {
-	for i := range orgs {
-		if orgs[i].OwnerID == ownerID {
-			return &orgs[i]
+// findRSARow returns the row matching ownerID (by pass_owner_id, falling
+// back to Owner_ID), or the sole row if there's exactly one and none
+// matches by ID (defensive, mirroring the confirmed real sample).
+func findRSARow(rows []apiRSARow, ownerID string) *apiRSARow {
+	for i := range rows {
+		if rows[i].PassOwnerID == ownerID || rows[i].OwnerID == ownerID {
+			return &rows[i]
 		}
 	}
-	if len(orgs) == 1 {
-		return &orgs[0]
+	if len(rows) == 1 {
+		return &rows[0]
 	}
 	return nil
 }

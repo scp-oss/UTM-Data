@@ -9,7 +9,8 @@
   {{if not .UTMs}}
     <div class="empty">Пока не добавлено ни одного УТМ.</div>
   {{else}}
-  <table>
+  <input type="text" id="utm-search" placeholder="Быстрый поиск по организации или адресу…" autocomplete="off" oninput="filterUTMs()" style="margin-bottom:14px;">
+  <table id="utm-table">
     <thead>
       <tr>
         <th>УТМ</th>
@@ -23,7 +24,7 @@
     </thead>
     <tbody>
       {{range .UTMs}}
-      <tr>
+      <tr data-search="{{.OrgName}} {{.InstallAddress}}">
         <td>
           <strong>{{if .Label}}{{.Label}}{{else}}УТМ #{{.ID}}{{end}}</strong><br>
           <span class="muted">{{.IPAddress}}:{{.Port}}</span>
@@ -57,6 +58,20 @@
       {{end}}
     </tbody>
   </table>
+  <div class="empty" id="utm-no-match" hidden>Ничего не найдено.</div>
+  <script>
+    function filterUTMs() {
+      var q = document.getElementById('utm-search').value.trim().toLowerCase();
+      var rows = document.querySelectorAll('#utm-table tbody tr');
+      var visible = 0;
+      rows.forEach(function (row) {
+        var match = !q || row.dataset.search.toLowerCase().indexOf(q) !== -1;
+        row.hidden = !match;
+        if (match) visible++;
+      });
+      document.getElementById('utm-no-match').hidden = visible !== 0;
+    }
+  </script>
   {{end}}
 </div>
 {{end}}
