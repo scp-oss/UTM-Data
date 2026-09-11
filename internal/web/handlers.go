@@ -510,7 +510,7 @@ func (s *Server) handleTelegramTest(w http.ResponseWriter, r *http.Request) {
 	for i, c := range chats {
 		chatIDs[i] = c.ChatID
 	}
-	errs := notifier.SendToAll(settings, chatIDs, fmt.Sprintf("✅ UTM Дашборд: тестовое сообщение (режим: %s)", settings.TelegramMode))
+	errs := notifier.SendToAll(settings, chatIDs, fmt.Sprintf("✅ УТМ: сроки сертификатов — тестовое сообщение (режим: %s)", settings.TelegramMode))
 	if len(errs) > 0 {
 		redirectWithFlash(w, r, "/settings", "error", fmt.Sprintf("Ошибки отправки: %d из %d (%v)", len(errs), len(chatIDs), errs[0]))
 		return
