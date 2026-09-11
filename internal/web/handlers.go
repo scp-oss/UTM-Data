@@ -285,7 +285,11 @@ func (s *Server) handleUTMExport(w http.ResponseWriter, r *http.Request) {
 	cw := csv.NewWriter(w)
 	_ = cw.Write([]string{"ip_address", "port", "label"})
 	for _, u := range utms {
-		_ = cw.Write([]string{u.IPAddress, strconv.Itoa(u.Port), u.Label})
+		port := ""
+		if u.Port != 8080 {
+			port = strconv.Itoa(u.Port)
+		}
+		_ = cw.Write([]string{u.IPAddress, port, u.Label})
 	}
 	cw.Flush()
 }
