@@ -74,6 +74,7 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("GET /utm/new", s.requireAuth(s.handleUTMNewForm))
 	s.mux.HandleFunc("POST /utm/new", s.requireAuth(s.handleUTMCreate))
+	s.mux.HandleFunc("POST /utm/bulk-add", s.requireAuth(s.handleUTMBulkAdd))
 	s.mux.HandleFunc("GET /utm/{id}/edit", s.requireAuth(s.handleUTMEditForm))
 	s.mux.HandleFunc("POST /utm/{id}/edit", s.requireAuth(s.handleUTMUpdate))
 	s.mux.HandleFunc("POST /utm/{id}/delete", s.requireAuth(s.handleUTMDelete))

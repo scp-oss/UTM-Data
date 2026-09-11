@@ -119,6 +119,82 @@ func (s *Server) handleUTMCreate(w http.ResponseWriter, r *http.Request) {
 	redirectWithFlash(w, r, "/", "ok", "УТМ добавлен, опрос запущен — обновите страницу через 10–30 секунд")
 }
 
+// handleUTMBulkAdd takes a pasted list of addresses (one per line, "IP" or
+// "IP:порт", port 8080 if omitted) and adds whichever aren't already
+// registered — so throwing in a known IP range just adds what's missing
+// instead of erroring on every one already present. Every newly added УТМ
+// is polled immediately, same as adding one by hand.
+func (s *Server) handleUTMBulkAdd(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	existing, err := s.store.ListUTMs()
+	if err != nil {
+		redirectWithFlash(w, r, "/utm/new", "error", "Не удалось прочитать список УТМ: "+err.Error())
+		return
+	}
+	known := make(map[string]bool, len(existing))
+	for _, u := range existing {
+		known[fmt.Sprintf("%s:%d", u.IPAddress, u.Port)] = true
+	}
+
+	var added, skipped, invalid int
+	for _, line := range strings.Split(r.FormValue("ips"), "\n") {
+		ip, port, ok := parseIPPortLine(line)
+		if !ok {
+			if strings.TrimSpace(line) != "" {
+				invalid++
+			}
+			continue
+		}
+		key := fmt.Sprintf("%s:%d", ip, port)
+		if known[key] {
+			skipped++
+			continue
+		}
+
+		id, err := s.store.CreateUTM("", ip, port)
+		if err != nil {
+			skipped++
+			continue
+		}
+		known[key] = true
+		added++
+		if u, err := s.store.GetUTM(id); err == nil {
+			s.sched.PollOneAsync(*u)
+		}
+	}
+
+	msg := fmt.Sprintf("Добавлено новых: %d, уже было: %d", added, skipped)
+	if invalid > 0 {
+		msg += fmt.Sprintf(", не распознано: %d", invalid)
+	}
+	msg += " — опрос новых запущен"
+	redirectWithFlash(w, r, "/", "ok", msg)
+}
+
+// parseIPPortLine parses one line of a bulk-add list: a bare IP (port
+// defaults to 8080), or "IP:порт". Blank lines and anything that isn't a
+// valid IP are rejected via ok=false.
+func parseIPPortLine(line string) (ip string, port int, ok bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", 0, false
+	}
+	ip, port = line, 8080
+	if idx := strings.LastIndex(line, ":"); idx != -1 {
+		if p, err := strconv.Atoi(line[idx+1:]); err == nil && p > 0 && p <= 65535 {
+			ip, port = line[:idx], p
+		}
+	}
+	if net.ParseIP(ip) == nil {
+		return "", 0, false
+	}
+	return ip, port, true
+}
+
 func (s *Server) handleUTMEditForm(w http.ResponseWriter, r *http.Request) {
 	id, ok := idParam(w, r)
 	if !ok {

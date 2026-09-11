@@ -48,4 +48,17 @@
     </div>
   </form>
 </div>
+
+{{if not .UTM}}
+<div class="card" style="max-width:480px;">
+  <strong>Массовое добавление по списку IP</strong>
+  <div class="hint">Вставьте адреса по одному на строку — просто IP (порт 8080 по умолчанию) или "IP:порт". Уже добавленные пропускаются, каждый новый сразу опрашивается.</div>
+  <form method="post" action="/utm/bulk-add">
+    <textarea name="ips" rows="10" placeholder="192.168.1.10&#10;192.168.1.11&#10;192.168.1.12:9090" style="margin-top:10px;" required></textarea>
+    <div style="margin-top:14px;">
+      <button class="btn secondary" type="submit">Добавить список</button>
+    </div>
+  </form>
+</div>
+{{end}}
 {{end}}
