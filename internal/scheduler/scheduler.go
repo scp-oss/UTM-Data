@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -178,9 +179,14 @@ func (s *Scheduler) PollOne(ctx context.Context, u models.UTM) {
 
 // CheckAndNotify scans all УТМ certificates and sends Telegram alerts for
 // any (certificate, threshold) combination that has become due and was not
-// already sent for the certificate's current expiry date. Each УТМ notifies
-// only its own scoped recipients plus the unscoped ("all УТМ") ones, so
-// different clients' contacts never see each other's alerts.
+// already sent for the certificate's current expiry date. Every item due in
+// the same run is batched into a single digest message per recipient
+// instead of one push notification per item — a recipient watching several
+// УТМ (or the unscoped "all УТМ" ones) would otherwise get a burst of 5-10
+// separate notifications whenever several certificates cross a threshold on
+// the same poll. Each УТМ still only reaches its own scoped recipients plus
+// the unscoped ones, so different clients' contacts never see each other's
+// alerts.
 func (s *Scheduler) CheckAndNotify(ctx context.Context) {
 	settings, err := s.store.GetSettings()
 	if err != nil {
@@ -198,6 +204,9 @@ func (s *Scheduler) CheckAndNotify(ctx context.Context) {
 	}
 
 	now := time.Now()
+	linesByChat := make(map[string][]string)
+	var toMark []sentKey
+
 	for _, u := range utms {
 		chats, err := s.store.ListTelegramChatsForUTM(u.ID)
 		if err != nil {
@@ -207,58 +216,96 @@ func (s *Scheduler) CheckAndNotify(ctx context.Context) {
 		if len(chats) == 0 {
 			continue
 		}
-		chatIDs := make([]string, len(chats))
-		for i, c := range chats {
-			chatIDs[i] = c.ChatID
-		}
 
-		s.checkCert(now, settings, chatIDs, u, models.CertEgais, u.EgaisCertTo)
-		s.checkCert(now, settings, chatIDs, u, models.CertGost, u.GostCertTo)
+		for _, cert := range []struct {
+			certType models.CertType
+			expiry   *time.Time
+		}{
+			{models.CertEgais, u.EgaisCertTo},
+			{models.CertGost, u.GostCertTo},
+		} {
+			for _, due := range s.dueThresholds(u.ID, cert.certType, cert.expiry, now) {
+				line := notificationLine(u, cert.certType, *cert.expiry, due.daysLeft, due.threshold)
+				for _, c := range chats {
+					linesByChat[c.ChatID] = append(linesByChat[c.ChatID], line)
+				}
+				toMark = append(toMark, sentKey{u.ID, cert.certType, *cert.expiry, due.threshold})
+			}
+		}
+	}
+
+	for chatID, lines := range linesByChat {
+		if err := notifier.Send(settings, chatID, buildDigest(lines)); err != nil {
+			log.Printf("notify: chat %s: %v", chatID, err)
+		}
+	}
+
+	for _, k := range toMark {
+		if err := s.store.MarkNotificationSent(k.utmID, k.certType, k.expiry, k.threshold); err != nil {
+			log.Printf("notify: mark sent утм #%d: %v", k.utmID, err)
+		}
 	}
 }
 
-func (s *Scheduler) checkCert(now time.Time, settings models.Settings, chatIDs []string, u models.UTM, certType models.CertType, expiry *time.Time) {
+type sentKey struct {
+	utmID     int64
+	certType  models.CertType
+	expiry    time.Time
+	threshold int
+}
+
+type dueThreshold struct {
+	threshold int
+	daysLeft  int
+}
+
+// dueThresholds returns, farthest-to-closest, every notification threshold
+// that has been reached for this certificate and not already sent for its
+// current expiry date — so if a УТМ was just added or the app was offline
+// for a while, all missed thresholds up to the current one are sent (each
+// still only once).
+func (s *Scheduler) dueThresholds(utmID int64, certType models.CertType, expiry *time.Time, now time.Time) []dueThreshold {
 	if expiry == nil {
-		return
+		return nil
 	}
 	daysLeft := int(expiry.Sub(now).Hours() / 24)
 	if daysLeft < 0 {
-		return
+		return nil
 	}
 
-	// Thresholds are checked from farthest to closest so that, if a УТМ was
-	// just added or the app was offline for a while, all missed thresholds
-	// up to the current one are sent (each still only once).
+	var due []dueThreshold
 	for _, threshold := range models.NotificationThresholds {
 		if daysLeft > threshold {
 			continue
 		}
-
-		sent, err := s.store.NotificationAlreadySent(u.ID, certType, *expiry, threshold)
+		sent, err := s.store.NotificationAlreadySent(utmID, certType, *expiry, threshold)
 		if err != nil {
-			log.Printf("notify: check sent state утм #%d: %v", u.ID, err)
+			log.Printf("notify: check sent state утм #%d: %v", utmID, err)
 			continue
 		}
 		if sent {
 			continue
 		}
-
-		text := notificationText(u, certType, *expiry, daysLeft)
-		for _, sendErr := range notifier.SendToAll(settings, chatIDs, text) {
-			log.Printf("notify: %v", sendErr)
-		}
-
-		if err := s.store.MarkNotificationSent(u.ID, certType, *expiry, threshold); err != nil {
-			log.Printf("notify: mark sent утм #%d: %v", u.ID, err)
-		}
+		due = append(due, dueThreshold{threshold: threshold, daysLeft: daysLeft})
 	}
+	return due
 }
 
-// notificationText leads with whichever name most clearly identifies the
-// client to a human reading several alerts in a row: the operator-chosen
-// label first (it's what they intentionally called this site), falling
-// back to the organization name fetched from the УТМ, then the IP.
-func notificationText(u models.UTM, certType models.CertType, expiry time.Time, daysLeft int) string {
+// buildDigest joins one or more notificationLine entries into a single
+// Telegram message with a short header, so several due certificates land in
+// one push notification instead of a flood of separate ones.
+func buildDigest(lines []string) string {
+	return "⚠️ Истекают сертификаты УТМ:\n\n" + strings.Join(lines, "\n")
+}
+
+// notificationLine renders one due certificate as a single compact line —
+// short enough to read cleanly on a phone without wrapping across several
+// physical lines — leading with whichever name most clearly identifies the
+// client: the operator-chosen label first (it's what they intentionally
+// called this site), falling back to the organization name fetched from
+// the УТМ, then the IP. The emoji encodes urgency at a glance when several
+// lines are stacked in one digest.
+func notificationLine(u models.UTM, certType models.CertType, expiry time.Time, daysLeft, threshold int) string {
 	orgName := models.PrettyOrgName(u.OrgName)
 	name := u.Label
 	if name == "" {
@@ -267,14 +314,27 @@ func notificationText(u models.UTM, certType models.CertType, expiry time.Time, 
 	if name == "" {
 		name = u.IPAddress
 	}
-
-	who := name
 	if orgName != "" && orgName != name {
-		who += " (" + orgName + ")"
+		name += " (" + orgName + ")"
 	}
 
-	return fmt.Sprintf(
-		"⚠️ %s\nУТМ %s: %s истекает %s (осталось %d дн.)",
-		who, u.IPAddress, certType.Label(), expiry.Format("02.01.2006"), daysLeft,
-	)
+	return fmt.Sprintf("%s %s — %s до %s, %d дн.",
+		urgencyEmoji(threshold), name, certType.ShortLabel(), expiry.Format("02.01.2006"), daysLeft)
+}
+
+// urgencyEmoji maps a crossed threshold to a color that reads at a glance
+// in a list of several lines — the closer the deadline, the hotter.
+func urgencyEmoji(threshold int) string {
+	switch {
+	case threshold <= 1:
+		return "🚨"
+	case threshold <= 2:
+		return "🔴"
+	case threshold <= 5:
+		return "🟠"
+	case threshold <= 10:
+		return "🟡"
+	default:
+		return "🔵"
+	}
 }

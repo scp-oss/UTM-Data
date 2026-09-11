@@ -74,6 +74,20 @@ const (
 // a Telegram alert, ordered from farthest to closest to expiry.
 var NotificationThresholds = []int{30, 10, 5, 2, 1}
 
+// ShortLabel is used in the compact Telegram digest, where several items
+// share one message and a long label would push lines to wrap awkwardly on
+// a phone screen.
+func (c CertType) ShortLabel() string {
+	switch c {
+	case CertEgais:
+		return "ЕГАИС"
+	case CertGost:
+		return "ГОСТ"
+	default:
+		return string(c)
+	}
+}
+
 func (c CertType) Label() string {
 	switch c {
 	case CertEgais:
