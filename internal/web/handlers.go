@@ -100,6 +100,10 @@ func (s *Server) handleUTMCreate(w http.ResponseWriter, r *http.Request) {
 
 	id, err := s.store.CreateUTM(label, ip, port)
 	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			redirectWithFlash(w, r, "/utm/new", "error", fmt.Sprintf("УТМ с адресом %s:%d уже добавлен", ip, port))
+			return
+		}
 		redirectWithFlash(w, r, "/utm/new", "error", "Не удалось сохранить УТМ: "+err.Error())
 		return
 	}
