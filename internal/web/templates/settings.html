@@ -39,7 +39,7 @@
 
     <div id="utm-mode-relay" style="display:none;">
       <label for="telegram_relay_base_url">Адрес relay-сервера</label>
-      <input type="text" id="telegram_relay_base_url" name="telegram_relay_base_url" value="{{.Settings.TelegramRelayBaseURL}}" placeholder="https://red-domage.cc.cd">
+      <input type="text" id="telegram_relay_base_url" name="telegram_relay_base_url" value="{{.Settings.TelegramRelayBaseURL}}" placeholder="https://ваш-relay">
       <label for="telegram_relay_auth_key">Ключ авторизации relay-сервера (auth)</label>
       <input type="text" id="telegram_relay_auth_key" name="telegram_relay_auth_key" value="{{.Settings.TelegramRelayAuthKey}}">
       <div class="hint">Итоговый запрос: {{"{relay}"}}/bot{{"{token}"}}/sendMessage?auth={{"{ключ}"}}</div>

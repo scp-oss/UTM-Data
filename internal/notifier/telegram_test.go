@@ -22,13 +22,13 @@ func TestBuildRequestRelay(t *testing.T) {
 	endpoint, _, err := buildRequest(models.Settings{
 		TelegramMode:         models.TelegramModeRelay,
 		TelegramBotToken:     "TOKEN",
-		TelegramRelayBaseURL: "https://red-domage.cc.cd/",
+		TelegramRelayBaseURL: "https://example-relay.test/",
 		TelegramRelayAuthKey: "MYKEY",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "https://red-domage.cc.cd/botTOKEN/sendMessage?auth=MYKEY"
+	want := "https://example-relay.test/botTOKEN/sendMessage?auth=MYKEY"
 	if endpoint != want {
 		t.Errorf("endpoint = %q, want %q", endpoint, want)
 	}

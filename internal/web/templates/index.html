@@ -39,16 +39,15 @@
         <td>
           {{if .LastPolledAt}}
             {{if .LastPollOK}}
-              <span class="badge ok">ok</span>
+              <span class="badge ok clickable" data-title="Последний ответ УТМ" data-detail="{{.LastRawResponse}}" onclick="utmShowPollModal(this)">ok</span>
             {{else}}
               {{$offlineDays := daysSince .FailingSince}}
-              <span class="badge danger" title="{{.LastPollError}}">офлайн{{if gt $offlineDays 0}} · {{$offlineDays}} дн.{{end}}</span>
+              <span class="badge danger clickable" data-title="Ошибка опроса" data-detail="{{.LastPollError}}" onclick="utmShowPollModal(this)">не в сети{{if gt $offlineDays 0}} · {{$offlineDays}} дн.{{end}}</span>
             {{end}}<br>
             <span class="muted">{{fmtDateTime .LastPolledAt}}</span>
           {{else}}
             <span class="badge muted">ещё не опрошен</span>
           {{end}}
-          {{if .LastPollError}}<div class="raw">{{.LastPollError}}</div>{{end}}
         </td>
         {{if $root.Authenticated}}
         <td>

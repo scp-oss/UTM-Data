@@ -52,7 +52,7 @@ type Settings struct {
 
 	TelegramMode         TelegramMode
 	TelegramProxyURL     string // socks5://[user:pass@]host:port, mode=socks5
-	TelegramRelayBaseURL string // e.g. https://red-domage.cc.cd, mode=relay
+	TelegramRelayBaseURL string // e.g. https://ваш-relay, mode=relay
 	TelegramRelayAuthKey string // relay's own "auth" query parameter, mode=relay
 }
 

@@ -68,6 +68,10 @@
   .empty { text-align: center; color: var(--muted); padding: 40px 0; }
   .row { display: flex; gap: 16px; flex-wrap: wrap; }
   .row > div { flex: 1; min-width: 200px; }
+  .badge.clickable { cursor: pointer; }
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); align-items: center; justify-content: center; z-index: 1000; padding: 20px; }
+  .modal-overlay.open { display: flex; }
+  .modal-box { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 20px; max-width: 560px; width: 100%; max-height: 80vh; overflow: auto; }
 </style>
 </head>
 <body>
@@ -90,6 +94,28 @@
   {{with .Flash}}<div class="flash {{.Kind}}">{{.Text}}</div>{{end}}
   {{template "content" .}}
 </main>
+<div class="modal-overlay" id="utm-poll-modal" onclick="if(event.target===this) utmClosePollModal()">
+  <div class="modal-box">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <strong id="utm-poll-modal-title">Подробности</strong>
+      <button class="btn secondary" type="button" onclick="utmClosePollModal()">Закрыть</button>
+    </div>
+    <div class="raw" id="utm-poll-modal-text" style="max-width:none; max-height:60vh;"></div>
+  </div>
+</div>
+<script>
+function utmShowPollModal(el) {
+  document.getElementById('utm-poll-modal-title').textContent = el.dataset.title || 'Подробности';
+  document.getElementById('utm-poll-modal-text').textContent = el.dataset.detail || '(нет данных)';
+  document.getElementById('utm-poll-modal').classList.add('open');
+}
+function utmClosePollModal() {
+  document.getElementById('utm-poll-modal').classList.remove('open');
+}
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Escape') utmClosePollModal();
+});
+</script>
 </body>
 </html>
 {{end}}
