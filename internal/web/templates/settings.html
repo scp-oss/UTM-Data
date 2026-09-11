@@ -51,6 +51,22 @@
   </form>
 </div>
 
+<div class="card" style="max-width:560px;">
+  <strong>Импорт / экспорт УТМ</strong>
+  <div class="hint">Резервная копия списка УТМ на всякий случай — только IP-адрес, порт и название. Организация, адрес и сроки сертификатов не экспортируются: они подтянутся заново при опросе после импорта.</div>
+  <div style="margin-top:14px; display:flex; gap:8px; flex-wrap:wrap;">
+    <a class="btn secondary" href="/settings/export">Экспорт CSV</a>
+  </div>
+  <form method="post" action="/settings/import" enctype="multipart/form-data" style="margin-top:14px;">
+    <label for="utm_import_file">Импорт из CSV</label>
+    <input type="file" id="utm_import_file" name="file" accept=".csv,text/csv" required>
+    <div class="hint">Формат: ip_address,port,label (заголовок необязателен, порт по умолчанию 8080). УТМ с уже существующим IP:порт пропускаются, новые сразу опрашиваются.</div>
+    <div style="margin-top:10px;">
+      <button class="btn secondary" type="submit">Импортировать</button>
+    </div>
+  </form>
+</div>
+
 <div class="card" style="max-width:640px;">
   <strong>Получатели уведомлений в Telegram</strong>
   <div class="hint">Уведомления придут за 30, 10, 5, 2 и 1 день до окончания каждого сертификата. Получатель, привязанный к конкретному УТМ, видит только его уведомления — так разные клиенты не путаются между собой; получатель без привязки («Все УТМ») получает всё.</div>

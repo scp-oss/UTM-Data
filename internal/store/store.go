@@ -108,7 +108,8 @@ func (s *Store) ListUTMs() ([]models.UTM, error) {
 
 const utmSelect = `SELECT id, label, ip_address, port, fsrar_id, inn, kpp, org_name, install_address,
 	egais_cert_from, egais_cert_to, gost_cert_from, gost_cert_to,
-	last_polled_at, last_poll_ok, last_poll_error, last_raw_response, created_at
+	last_polled_at, last_poll_ok, last_poll_error, last_raw_response,
+	consecutive_poll_failures, failing_since, created_at
 	FROM utms`
 
 type scanner interface {
@@ -117,13 +118,14 @@ type scanner interface {
 
 func scanUTM(row scanner) (*models.UTM, error) {
 	var u models.UTM
-	var egaisFrom, egaisTo, gostFrom, gostTo, lastPolledAt sql.NullString
+	var egaisFrom, egaisTo, gostFrom, gostTo, lastPolledAt, failingSince sql.NullString
 	var lastPollOK int
 	var createdAt string
 	err := row.Scan(
 		&u.ID, &u.Label, &u.IPAddress, &u.Port, &u.FSRARID, &u.INN, &u.KPP, &u.OrgName, &u.InstallAddress,
 		&egaisFrom, &egaisTo, &gostFrom, &gostTo,
-		&lastPolledAt, &lastPollOK, &u.LastPollError, &u.LastRawResponse, &createdAt,
+		&lastPolledAt, &lastPollOK, &u.LastPollError, &u.LastRawResponse,
+		&u.ConsecutivePollFailures, &failingSince, &createdAt,
 	)
 	if err != nil {
 		return nil, err
@@ -134,6 +136,7 @@ func scanUTM(row scanner) (*models.UTM, error) {
 	u.GostCertTo = parseTime(gostTo)
 	u.LastPolledAt = parseTime(lastPolledAt)
 	u.LastPollOK = lastPollOK != 0
+	u.FailingSince = parseTime(failingSince)
 	if t, err := time.Parse(timeLayout, createdAt); err == nil {
 		u.CreatedAt = t
 	}
@@ -156,15 +159,25 @@ type PollResult struct {
 	RawResponse    string
 }
 
+// SaveUTMPollResult persists a poll's outcome and updates the
+// consecutive-failure streak used to show "не отвечает N дней": a success
+// resets it to zero and clears failing_since, a failure increments it and
+// sets failing_since only if it wasn't already tracking a streak (so the
+// streak's start date doesn't move on every subsequent failure).
 func (s *Store) SaveUTMPollResult(id int64, r PollResult) error {
+	now := time.Now().UTC().Format(timeLayout)
+	ok := boolToInt(r.OK)
 	_, err := s.db.Exec(`UPDATE utms SET
 		fsrar_id = ?, inn = ?, kpp = ?, org_name = ?, install_address = ?,
 		egais_cert_from = ?, egais_cert_to = ?, gost_cert_from = ?, gost_cert_to = ?,
-		last_polled_at = ?, last_poll_ok = ?, last_poll_error = ?, last_raw_response = ?
+		last_polled_at = ?, last_poll_ok = ?, last_poll_error = ?, last_raw_response = ?,
+		consecutive_poll_failures = CASE WHEN ? THEN 0 ELSE consecutive_poll_failures + 1 END,
+		failing_since = CASE WHEN ? THEN NULL WHEN failing_since IS NULL THEN ? ELSE failing_since END
 		WHERE id = ?`,
 		r.FSRARID, r.INN, r.KPP, r.OrgName, r.InstallAddress,
 		formatTime(r.EgaisCertFrom), formatTime(r.EgaisCertTo), formatTime(r.GostCertFrom), formatTime(r.GostCertTo),
-		time.Now().UTC().Format(timeLayout), boolToInt(r.OK), r.Error, r.RawResponse,
+		now, ok, r.Error, r.RawResponse,
+		ok, ok, now,
 		id,
 	)
 	return err

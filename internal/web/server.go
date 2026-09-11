@@ -46,6 +46,7 @@ func New(st *store.Store, sched *scheduler.Scheduler, authMgr *auth.Manager) *Se
 		"fmtDateTime":   fmtDateTime,
 		"certInfo":      newCertInfo,
 		"prettyOrgName": models.PrettyOrgName,
+		"daysSince":     daysSince,
 	}
 
 	pages := make(map[string]*template.Template, len(pageFiles))
@@ -80,6 +81,8 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("GET /settings", s.requireAuth(s.handleSettings))
 	s.mux.HandleFunc("POST /settings", s.requireAuth(s.handleSettingsSave))
+	s.mux.HandleFunc("GET /settings/export", s.requireAuth(s.handleUTMExport))
+	s.mux.HandleFunc("POST /settings/import", s.requireAuth(s.handleUTMImport))
 	s.mux.HandleFunc("POST /settings/telegram/add", s.requireAuth(s.handleTelegramChatAdd))
 	s.mux.HandleFunc("POST /settings/telegram/{id}/delete", s.requireAuth(s.handleTelegramChatDelete))
 	s.mux.HandleFunc("POST /settings/telegram/test", s.requireAuth(s.handleTelegramTest))
@@ -173,6 +176,15 @@ func fmtDateTime(t *time.Time) string {
 		return ""
 	}
 	return t.Local().Format("02.01.2006 15:04")
+}
+
+// daysSince reports whole days elapsed since t (0 for "started today"),
+// used to show how long a УТМ has been unreachable.
+func daysSince(t *time.Time) int {
+	if t == nil {
+		return 0
+	}
+	return int(time.Since(*t).Hours() / 24)
 }
 
 // certInfo is the view model behind the "certcell" template block.

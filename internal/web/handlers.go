@@ -1,7 +1,9 @@
 package web
 
 import (
+	"encoding/csv"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -265,6 +267,100 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	redirectWithFlash(w, r, "/settings", "ok", "Настройки сохранены")
+}
+
+// handleUTMExport downloads every УТМ's IP/port/label as CSV — a simple
+// backup so the list can be restored (or copied to another instance)
+// without needing the database file itself. Organization info and
+// certificate dates are deliberately left out: they get filled back in by
+// the next poll, and re-typing them on import would just risk going stale.
+func (s *Server) handleUTMExport(w http.ResponseWriter, r *http.Request) {
+	utms, err := s.store.ListUTMs()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="utm-export.csv"`)
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{"ip_address", "port", "label"})
+	for _, u := range utms {
+		_ = cw.Write([]string{u.IPAddress, strconv.Itoa(u.Port), u.Label})
+	}
+	cw.Flush()
+}
+
+// handleUTMImport bulk-adds УТМ from a CSV file in the format handleUTMExport
+// produces (ip_address,port,label — port/label optional, header row
+// optional). Rows with an invalid IP, or an ip:port pair already in the
+// database, are skipped rather than failing the whole import. Every newly
+// added УТМ is polled immediately, same as adding one by hand.
+func (s *Server) handleUTMImport(w http.ResponseWriter, r *http.Request) {
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		redirectWithFlash(w, r, "/settings", "error", "Выберите CSV-файл для импорта")
+		return
+	}
+	defer file.Close()
+
+	existing, err := s.store.ListUTMs()
+	if err != nil {
+		redirectWithFlash(w, r, "/settings", "error", "Импорт не удался: "+err.Error())
+		return
+	}
+	known := make(map[string]bool, len(existing))
+	for _, u := range existing {
+		known[fmt.Sprintf("%s:%d", u.IPAddress, u.Port)] = true
+	}
+
+	cr := csv.NewReader(file)
+	cr.FieldsPerRecord = -1
+	rows, err := cr.ReadAll()
+	if err != nil {
+		redirectWithFlash(w, r, "/settings", "error", "Не удалось прочитать CSV: "+err.Error())
+		return
+	}
+
+	var added, skipped int
+	for _, row := range rows {
+		if len(row) == 0 {
+			continue
+		}
+		ip := strings.TrimSpace(row[0])
+		if ip == "" || strings.EqualFold(ip, "ip_address") || strings.EqualFold(ip, "ip") {
+			continue // blank line or header row
+		}
+		if net.ParseIP(ip) == nil {
+			skipped++
+			continue
+		}
+		port := 8080
+		if len(row) > 1 {
+			port = parsePortOrDefault(row[1])
+		}
+		key := fmt.Sprintf("%s:%d", ip, port)
+		if known[key] {
+			skipped++
+			continue
+		}
+		label := ""
+		if len(row) > 2 {
+			label = strings.TrimSpace(row[2])
+		}
+
+		id, err := s.store.CreateUTM(label, ip, port)
+		if err != nil {
+			skipped++
+			continue
+		}
+		known[key] = true
+		added++
+		if u, err := s.store.GetUTM(id); err == nil {
+			s.sched.PollOneAsync(*u)
+		}
+	}
+
+	redirectWithFlash(w, r, "/settings", "ok", fmt.Sprintf("Импорт готов: добавлено %d, пропущено %d — опрос запущен", added, skipped))
 }
 
 func (s *Server) handleTelegramChatAdd(w http.ResponseWriter, r *http.Request) {

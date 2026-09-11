@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS utms (
     last_poll_ok       INTEGER NOT NULL DEFAULT 0,
     last_poll_error    TEXT NOT NULL DEFAULT '',
     last_raw_response  TEXT NOT NULL DEFAULT '',
+    consecutive_poll_failures INTEGER NOT NULL DEFAULT 0,
+    failing_since      TEXT,
     created_at         TEXT NOT NULL,
     UNIQUE (ip_address, port)
 );

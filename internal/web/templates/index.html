@@ -38,7 +38,12 @@
         <td>{{template "certcell" certInfo .GostCertFrom .GostCertTo}}</td>
         <td>
           {{if .LastPolledAt}}
-            {{if .LastPollOK}}<span class="badge ok">ok</span>{{else}}<span class="badge danger" title="{{.LastPollError}}">ошибка</span>{{end}}<br>
+            {{if .LastPollOK}}
+              <span class="badge ok">ok</span>
+            {{else}}
+              {{$offlineDays := daysSince .FailingSince}}
+              <span class="badge danger" title="{{.LastPollError}}">офлайн{{if gt $offlineDays 0}} · {{$offlineDays}} дн.{{end}}</span>
+            {{end}}<br>
             <span class="muted">{{fmtDateTime .LastPolledAt}}</span>
           {{else}}
             <span class="badge muted">ещё не опрошен</span>

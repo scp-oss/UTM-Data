@@ -22,7 +22,13 @@ type UTM struct {
 	LastPollOK      bool
 	LastPollError   string
 	LastRawResponse string
-	CreatedAt       time.Time
+	// ConsecutivePollFailures and FailingSince track an unbroken run of
+	// failed polls, reset to 0/nil the moment one succeeds — so the
+	// dashboard can show "не отвечает N дней" to help decide whether a УТМ
+	// is just temporarily down or should be removed (decommissioned).
+	ConsecutivePollFailures int
+	FailingSince            *time.Time
+	CreatedAt               time.Time
 }
 
 // TelegramMode selects how outgoing Telegram API calls are routed. All three
